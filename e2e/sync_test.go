@@ -1576,7 +1576,13 @@ func TestSyncS3BucketToS3BucketWithDeleteStorageClass(t *testing.T) {
 
 	result := icmd.RunCmd(cmd)
 
-	result.Assert(t, icmd.Success)
+	// the source is empty, which sync reports as an error and exits with 1,
+	// but the objects in the destination are still deleted.
+	result.Assert(t, icmd.Expected{ExitCode: 1})
+
+	assertLines(t, result.Stderr(), map[int]compareFunc{
+		0: contains(`no object found`),
+	})
 
 	assertLines(t, result.Stdout(), map[int]compareFunc{
 		0: equals(`rm %vtestfile1.txt`, dst),
@@ -2875,6 +2881,60 @@ func TestSyncS3BucketToS3BucketThatDoesNotExist(t *testing.T) {
 
 	assertLines(t, result.Stderr(), map[int]compareFunc{
 		0: contains(`status code: 404`),
+	})
+}
+
+// sync s3://bucket/nonexistent folder/ (source object does not exist)
+func TestSyncS3ObjectThatDoesNotExistExitsWithError(t *testing.T) {
+	t.Parallel()
+
+	s3client, s5cmd := setup(t)
+
+	bucket := s3BucketFromTestName(t)
+	createBucket(t, s3client, bucket)
+
+	putFile(t, s3client, bucket, "other.txt", "S: this is another file")
+
+	workdir := fs.NewDir(t, "somedir")
+	defer workdir.Remove()
+
+	src := fmt.Sprintf("s3://%v/nonexistent.txt", bucket)
+	dst := fmt.Sprintf("%v/", filepath.ToSlash(workdir.Path()))
+
+	cmd := s5cmd("sync", src, dst)
+	result := icmd.RunCmd(cmd)
+
+	result.Assert(t, icmd.Expected{ExitCode: 1})
+
+	assertLines(t, result.Stderr(), map[int]compareFunc{
+		0: contains(`no object found`),
+	})
+
+	assert.Assert(t, fs.Equal(workdir.Path(), fs.Expected(t)))
+}
+
+// sync s3://bucket/nonexistent/* folder/ (nothing matches the wildcard)
+func TestSyncS3WildcardWithNoMatchExitsWithError(t *testing.T) {
+	t.Parallel()
+
+	s3client, s5cmd := setup(t)
+
+	bucket := s3BucketFromTestName(t)
+	createBucket(t, s3client, bucket)
+
+	workdir := fs.NewDir(t, "somedir")
+	defer workdir.Remove()
+
+	src := fmt.Sprintf("s3://%v/nonexistent/*", bucket)
+	dst := fmt.Sprintf("%v/", filepath.ToSlash(workdir.Path()))
+
+	cmd := s5cmd("sync", src, dst)
+	result := icmd.RunCmd(cmd)
+
+	result.Assert(t, icmd.Expected{ExitCode: 1})
+
+	assertLines(t, result.Stderr(), map[int]compareFunc{
+		0: contains(`no object found`),
 	})
 }
 

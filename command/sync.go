@@ -117,6 +117,29 @@ func NewSyncCommand() *cli.Command {
 	return cmd
 }
 
+// syncErrors collects the errors that sync reports while it lists and plans
+// the work, so that they are reflected in the exit status. Errors from the
+// generated cp and rm commands are collected separately by the run loop.
+type syncErrors struct {
+	mu   sync.Mutex
+	errs *multierror.Error
+}
+
+func (e *syncErrors) add(err error) {
+	if err == nil || errorpkg.IsCancelation(err) {
+		return
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.errs = multierror.Append(e.errs, err)
+}
+
+func (e *syncErrors) err() error {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.errs.ErrorOrNil()
+}
+
 type ObjectPair struct {
 	src, dst *storage.Object
 }
@@ -148,6 +171,9 @@ type Sync struct {
 
 	srcRegion string
 	dstRegion string
+
+	// listErrs holds the errors printed while listing and planning.
+	listErrs *syncErrors
 }
 
 // NewSync creates Sync from cli.Context
@@ -200,6 +226,8 @@ func (s Sync) Run(c *cli.Context) error {
 		printError(s.fullCommand, s.op, err)
 		return err
 	}
+
+	s.listErrs = &syncErrors{}
 
 	ctx, cancel := context.WithCancel(c.Context)
 
@@ -256,7 +284,7 @@ func (s Sync) Run(c *cli.Context) error {
 	go s.planRun(c, onlySource, onlyDest, commonObjects, dsturl, strategy, pipeWriter, isBatch)
 
 	err = NewRun(c, pipeReader).Run(ctx)
-	return multierror.Append(err, merrorWaiter).ErrorOrNil()
+	return multierror.Append(err, merrorWaiter, s.listErrs.err()).ErrorOrNil()
 }
 
 // compareObjects compares source and destination objects. It assumes that
@@ -376,6 +404,7 @@ func (s Sync) getSourceAndDestinationObjects(ctx context.Context, cancel context
 						Operation: s.op,
 					}
 					log.Error(msg)
+					s.listErrs.add(st.Err)
 					cancel()
 				}
 				if s.shouldSkipSrcObject(st, true) {
@@ -398,12 +427,13 @@ func (s Sync) getSourceAndDestinationObjects(ctx context.Context, cancel context
 			sourceObjects <- &o
 		}
 
-		// read and print the external sort errors
-		go func() {
-			for err := range srcErrCh {
-				printError(s.fullCommand, s.op, err)
-			}
-		}()
+		// read and print the external sort errors. The error channel is
+		// closed by the sorter before it closes the output channel, so
+		// this does not block once the loop above is done.
+		for err := range srcErrCh {
+			printError(s.fullCommand, s.op, err)
+			s.listErrs.add(err)
+		}
 	}()
 
 	// get destination objects.
@@ -423,6 +453,7 @@ func (s Sync) getSourceAndDestinationObjects(ctx context.Context, cancel context
 						Operation: s.op,
 					}
 					log.Error(msg)
+					s.listErrs.add(dt.Err)
 					cancel()
 				}
 				if s.shouldSkipDstObject(dt, false) {
@@ -445,12 +476,13 @@ func (s Sync) getSourceAndDestinationObjects(ctx context.Context, cancel context
 			destObjects <- &o
 		}
 
-		// read and print the external sort errors
-		go func() {
-			for err := range dstErrCh {
-				printError(s.fullCommand, s.op, err)
-			}
-		}()
+		// read and print the external sort errors. The error channel is
+		// closed by the sorter before it closes the output channel, so
+		// this does not block once the loop above is done.
+		for err := range dstErrCh {
+			printError(s.fullCommand, s.op, err)
+			s.listErrs.add(err)
+		}
 	}()
 
 	return sourceObjects, destObjects, nil
@@ -597,6 +629,7 @@ func (s Sync) shouldSkipSrcObject(object *storage.Object, verbose bool) bool {
 	if err := object.Err; err != nil {
 		if verbose {
 			printError(s.fullCommand, s.op, err)
+			s.listErrs.add(err)
 		}
 		return true
 	}
