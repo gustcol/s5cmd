@@ -419,6 +419,9 @@ increase the open file limit or try to decrease the number of workers with
 
 // Run starts copying given source objects to destination.
 func (c Copy) Run(ctx context.Context) error {
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
 	// override source region if set
 	if c.srcRegion != "" {
 		c.storageOpts.SetRegion(c.srcRegion)
@@ -448,16 +451,7 @@ func (c Copy) Run(ctx context.Context) error {
 
 	go func() {
 		defer close(errDoneCh)
-		for err := range waiter.Err() {
-			if strings.Contains(err.Error(), "too many open files") {
-				fmt.Println(strings.TrimSpace(fdlimitWarning))
-				fmt.Printf("ERROR %v\n", err)
-
-				os.Exit(1)
-			}
-			printError(c.fullCommand, c.op, err)
-			merrorWaiter = multierror.Append(merrorWaiter, err)
-		}
+		merrorWaiter = collectCopyErrors(c.fullCommand, c.op, waiter.Err(), cancel)
 	}()
 
 	isBatch := c.src.IsWildcard()
@@ -558,7 +552,10 @@ func (c Copy) Run(ctx context.Context) error {
 			}
 			task = c.prepareUploadTask(ctx, srcurl, c.dst, isBatch, c.metadata)
 		default:
-			panic("unexpected src-dst pair")
+			err := fmt.Errorf("unexpected src-dst pair: %v -> %v", srcurl, c.dst)
+			merrorObjects = multierror.Append(merrorObjects, err)
+			printError(c.fullCommand, c.op, err)
+			continue
 		}
 		parallel.Run(task, waiter)
 	}
@@ -566,6 +563,27 @@ func (c Copy) Run(ctx context.Context) error {
 	<-errDoneCh
 
 	return multierror.Append(merrorWaiter, merrorObjects).ErrorOrNil()
+}
+
+// collectCopyErrors prints and aggregates the errors of the copy tasks until
+// errCh is closed. When a task hits the open file limit it prints a hint once
+// and calls cancel, so queued work stops and Run can return normally instead of
+// killing the process and skipping deferred cleanup.
+func collectCopyErrors(fullCommand, op string, errCh <-chan error, cancel context.CancelFunc) error {
+	var merr error
+	fdlimitWarned := false
+	for err := range errCh {
+		if strings.Contains(err.Error(), "too many open files") {
+			if !fdlimitWarned {
+				fdlimitWarned = true
+				fmt.Println(strings.TrimSpace(fdlimitWarning))
+			}
+			cancel()
+		}
+		printError(fullCommand, op, err)
+		merr = multierror.Append(merr, err)
+	}
+	return merr
 }
 
 func (c Copy) prepareCopyTask(
