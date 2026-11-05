@@ -85,6 +85,17 @@ func printError(command, op string, err error) {
 	log.Error(msg)
 }
 
+// printWarning logs a message about something that did not fail the command
+// but that the user should know, for example a check that could not be done.
+// It goes to stderr like errors, and does not change the exit status.
+func printWarning(command, op, message string) {
+	log.Error(log.ErrorMessage{
+		Err:       "warning: " + message,
+		Command:   command,
+		Operation: op,
+	})
+}
+
 // cleanupError converts multiline messages into
 // a single line.
 func cleanupError(err error) string {

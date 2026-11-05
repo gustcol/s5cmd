@@ -39,8 +39,9 @@ type checksumLayer struct {
 	// heads counts HEAD requests for a part, so tests can see that a
 	// verification used them.
 	partHeads int
-	// disableETagOverride keeps the ETag that gofakes3 returns.
-	sseKMS bool
+	sseKMS    bool
+	// corruptGets changes the body of GET responses.
+	corruptGets bool
 }
 
 type layerObject struct {
@@ -121,25 +122,12 @@ func (l *checksumLayer) setSSEKMS() {
 	l.sseKMS = true
 }
 
-// corrupt changes the stored checksums of an object, as if the object on the
-// server had different content than what was uploaded.
-func (l *checksumLayer) corrupt(path string) {
+// corruptDownloads makes GET responses carry a changed first byte, as if the
+// data was damaged on the way.
+func (l *checksumLayer) corruptDownloads(on bool) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	o := l.objects[path]
-	if o == nil {
-		return
-	}
-	for alg, v := range o.sums {
-		o.sums[alg] = layerSum(alg, []byte("not the content")) + suffixOf(v)
-	}
-}
-
-func suffixOf(v string) string {
-	if i := strings.LastIndexByte(v, '-'); i >= 0 {
-		return v[i:]
-	}
-	return ""
+	l.corruptGets = on
 }
 
 func layerError(w http.ResponseWriter, code string) {
@@ -339,6 +327,10 @@ func (l *checksumLayer) decorate(rec *httptest.ResponseRecorder, r *http.Request
 		return
 	}
 	h := rec.Header()
+	if l.corruptGets && r.Method == http.MethodGet && !r.URL.Query().Has("list-type") && rec.Body.Len() > 0 {
+		b := rec.Body.Bytes()
+		b[0] ^= 0xff
+	}
 	h.Set("ETag", obj.etag)
 	if l.sseKMS {
 		h.Set("X-Amz-Server-Side-Encryption", "aws:kms")

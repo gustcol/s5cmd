@@ -679,6 +679,37 @@ current CPUs, `SHA256` and `SHA1` cost more, see the numbers in the changelog.
 `--checksum-algorithm` is refused for downloads and for copies between buckets,
 where there is no upload from this host to protect.
 
+#### Verifying downloads (`--verify`)
+
+`cp`, `mv` and `sync` accept `--verify` for downloads. After an object is
+downloaded, `s5cmd` compares the local file with what the object says about
+itself, using the first of these that applies:
+
+1. the additional checksum the object was uploaded with (`SHA256`, `SHA1`,
+   `CRC32C`, `CRC32`), including the checksum of parts of a multipart object;
+2. the ETag, when it is an MD5: an object uploaded in one request without KMS
+   or customer key encryption, or a multipart object whose part sizes the server
+   reports.
+
+    s5cmd cp --verify "s3://bucket/data/*" dir/
+
+If the local file does not match, the download fails with exit code `1`, the
+temporary file is removed and nothing is left at the destination (an existing
+file there is kept). With `mv` the source object is not deleted. If the object
+has nothing that can be compared, for example it is encrypted with KMS and has
+no additional checksum, or it is a multipart object without checksums on a
+server that does not report part sizes, `s5cmd` prints a `warning: cannot verify`
+line to stderr and does not fail: not being able to verify is not the same as a
+bad download. Use `--checksum-algorithm` when uploading to make sure objects can
+be verified later.
+
+`--verify` reads every downloaded file once more, and asks S3 for the object
+checksums with one extra `HEAD` request per object. For a multipart object
+uploaded with checksums, one more request per part is made when the check on
+equal sized parts does not match. The check is made against the object as it is
+when the download finishes, so an object that is replaced during the download
+fails the verification.
+
 **Sources:**
 - [AWS Go SDK](https://github.com/aws/aws-sdk-go/blob/b75b2a7b3cb40ece5774ed07dde44903481a2d4d/service/s3/customizations.go#L56)
 - [AWS CLI Docs](https://docs.aws.amazon.com/cli/latest/topic/s3-faq.html)
