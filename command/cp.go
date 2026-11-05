@@ -960,9 +960,13 @@ func prepareLocalDestination(
 	}
 
 	if isBatch && !flatten {
-		dsturl = dsturl.Join(objname)
-		err := client.MkdirAll(dsturl.Dir())
-		if err != nil {
+		// do not reuse err here, it still holds the Stat result below.
+		joined, jerr := dsturl.JoinInside(objname)
+		if jerr != nil {
+			return nil, jerr
+		}
+		dsturl = joined
+		if err := client.MkdirAll(dsturl.Dir()); err != nil {
 			return nil, err
 		}
 	}
@@ -973,11 +977,19 @@ func prepareLocalDestination(
 			return nil, err
 		}
 		if strings.HasSuffix(dsturl.Absolute(), "/") {
-			dsturl = dsturl.Join(objname)
+			joined, jerr := dsturl.JoinInside(objname)
+			if jerr != nil {
+				return nil, jerr
+			}
+			dsturl = joined
 		}
 	} else {
 		if obj.Type.IsDir() {
-			dsturl = obj.URL.Join(objname)
+			joined, jerr := obj.URL.JoinInside(objname)
+			if jerr != nil {
+				return nil, jerr
+			}
+			dsturl = joined
 		}
 	}
 
