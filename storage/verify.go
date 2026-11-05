@@ -136,11 +136,6 @@ type CompareOptions struct {
 	// the server cannot tell the size of a part, typically the part size
 	// configured for the transfer.
 	PartSizes []int64
-	// ExactParts makes a multipart object with checksums be compared part by
-	// part when it does not match the checksum computed from parts of equal
-	// size. This needs one request for every part, but it is exact even when
-	// the parts have different sizes.
-	ExactParts bool
 }
 
 // CompareFile compares the local file at path with the remote object u using
@@ -152,8 +147,12 @@ type CompareOptions struct {
 //     encrypted with KMS or a customer key, or a multipart upload whose part
 //     layout can be reproduced.
 //
-// The local file is read at most once. An unknown result is returned, instead
-// of a guess, when none of them can be used.
+// A multipart object is first compared assuming parts of equal size (the size
+// of the first part, which the server reports, or the sizes in opts). If that
+// does not match, the size and checksum of every part is requested, which
+// takes one request per part but is exact for any part layout, so a different
+// result is a real one. An unknown result is returned, instead of a guess,
+// when none of the checks can be used.
 func CompareFile(ctx context.Context, p IntegrityProvider, u *url.URL, path string, opts CompareOptions) (Comparison, error) {
 	info, err := p.HeadIntegrity(ctx, u, 0)
 	if err != nil {
@@ -240,7 +239,7 @@ func compareComposite(ctx context.Context, p IntegrityProvider, u *url.URL, path
 		}
 	}
 
-	if !opts.ExactParts || !supported {
+	if !supported {
 		detail := "the part layout of the object is not known"
 		if local != "" {
 			detail = fmt.Sprintf("the %s of the local file split in parts of equal size is %s, the object has %s", method, local, cs.Value)
@@ -346,7 +345,7 @@ func compareETag(ctx context.Context, p IntegrityProvider, u *url.URL, path stri
 		}
 	}
 
-	if opts.ExactParts && supported {
+	if supported {
 		// the server reports the size of every part, so the ETag can be
 		// reproduced for any part layout and a mismatch is a real one.
 		sizes := make([]int64, 0, parts)
@@ -379,3 +378,66 @@ func compareETag(ctx context.Context, p IntegrityProvider, u *url.URL, path stri
 }
 
 var _ IntegrityProvider = (*S3)(nil)
+
+// CompareObjects compares two remote objects using what they report about
+// themselves, without reading their content: an additional checksum that
+// both have, or equal ETags. Different multipart checksums or ETags are not
+// evidence of different content, because the same content can be split in
+// parts in different ways, so they give an unknown result.
+func CompareObjects(ctx context.Context, srcP IntegrityProvider, srcURL *url.URL, dstP IntegrityProvider, dstURL *url.URL) (Comparison, error) {
+	a, err := srcP.HeadIntegrity(ctx, srcURL, 0)
+	if err != nil {
+		return Comparison{}, err
+	}
+	b, err := dstP.HeadIntegrity(ctx, dstURL, 0)
+	if err != nil {
+		return Comparison{}, err
+	}
+	if a.Size != b.Size {
+		return Comparison{
+			Result: CompareDifferent,
+			Method: "size",
+			Detail: fmt.Sprintf("the objects have %d and %d bytes", a.Size, b.Size),
+		}, nil
+	}
+
+	for _, alg := range ChecksumAlgorithms {
+		av, aok := a.checksumFor(alg)
+		bv, bok := b.checksumFor(alg)
+		if !aok || !bok {
+			continue
+		}
+		if av == bv {
+			return Comparison{Result: CompareEqual, Method: string(alg)}, nil
+		}
+		if strings.Contains(av, "-") || strings.Contains(bv, "-") {
+			return Comparison{Method: string(alg), Detail: "the objects have different checksums of parts, they may be split in parts differently"}, nil
+		}
+		return Comparison{
+			Result: CompareDifferent,
+			Method: string(alg),
+			Detail: fmt.Sprintf("%s is %s and %s", alg, av, bv),
+		}, nil
+	}
+
+	notMD5 := func(i *Integrity) bool {
+		return i.SSECustomer || strings.HasPrefix(i.ServerSideEncryption, "aws:kms")
+	}
+	if notMD5(a) || notMD5(b) {
+		return Comparison{Method: "ETag", Detail: "the ETag of an object encrypted with KMS or a customer key is not an MD5"}, nil
+	}
+	if a.ETag == "" || b.ETag == "" {
+		return Comparison{Method: "ETag", Detail: "an object has no ETag"}, nil
+	}
+	if strings.EqualFold(a.ETag, b.ETag) {
+		return Comparison{Result: CompareEqual, Method: "ETag"}, nil
+	}
+	if isMD5Hex(strings.ToLower(a.ETag)) && isMD5Hex(strings.ToLower(b.ETag)) {
+		return Comparison{
+			Result: CompareDifferent,
+			Method: "MD5 ETag",
+			Detail: fmt.Sprintf("ETag is %s and %s", a.ETag, b.ETag),
+		}, nil
+	}
+	return Comparison{Method: "ETag", Detail: "the ETags differ and at least one is of a multipart upload"}, nil
+}

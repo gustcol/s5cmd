@@ -85,6 +85,9 @@ var (
 	// compared.
 	ErrObjectModTimeUnknown = fmt.Errorf("object modification time unknown")
 
+	// ErrObjectChecksumsMatch indicates the content of the objects is the same.
+	ErrObjectChecksumsMatch = fmt.Errorf("object checksum matches")
+
 	// ErrObjectIsGlacier indicates the object is in Glacier storage class.
 	ErrorObjectIsGlacier = fmt.Errorf("object is in Glacier storage class")
 )
@@ -93,7 +96,7 @@ var (
 // ErrObjectIsNewer or ErrObjectSizesMatch.
 func IsWarning(err error) bool {
 	switch err {
-	case ErrObjectExists, ErrObjectIsNewer, ErrObjectSizesMatch, ErrObjectIsNewerAndSizesMatch, ErrObjectModTimeUnknown, ErrorObjectIsGlacier:
+	case ErrObjectExists, ErrObjectIsNewer, ErrObjectSizesMatch, ErrObjectIsNewerAndSizesMatch, ErrObjectModTimeUnknown, ErrObjectChecksumsMatch, ErrorObjectIsGlacier:
 		return true
 	}
 

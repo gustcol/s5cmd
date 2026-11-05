@@ -53,22 +53,25 @@ Examples:
 	05. Sync S3 bucket to local folder but use size as only comparison criteria.
 		 > s5cmd {{.HelpName}} --size-only "s3://bucket/*" folder/
 
-	06. Sync a file to S3 bucket
+	06. Sync S3 bucket to local folder and compare the content of files that have the same size.
+		 > s5cmd {{.HelpName}} --checksum "s3://bucket/*" folder/
+
+	07. Sync a file to S3 bucket
 		 > s5cmd {{.HelpName}} myfile.gz s3://bucket/
 
-	07. Sync matching S3 objects to another bucket
+	08. Sync matching S3 objects to another bucket
 		 > s5cmd {{.HelpName}} "s3://bucket/*.gz" s3://target-bucket/prefix/
 
-	08. Perform KMS Server Side Encryption of the object(s) at the destination
+	09. Perform KMS Server Side Encryption of the object(s) at the destination
 		 > s5cmd {{.HelpName}} --sse aws:kms s3://bucket/object s3://target-bucket/prefix/object
 
-	09. Perform KMS-SSE of the object(s) at the destination using customer managed Customer Master Key (CMK) key id
+	10. Perform KMS-SSE of the object(s) at the destination using customer managed Customer Master Key (CMK) key id
 		 > s5cmd {{.HelpName}} --sse aws:kms --sse-kms-key-id <your-kms-key-id> s3://bucket/object s3://target-bucket/prefix/object
 
-	10. Sync all files to S3 bucket but exclude the ones with txt and gz extension
+	11. Sync all files to S3 bucket but exclude the ones with txt and gz extension
 		 > s5cmd {{.HelpName}} --exclude "*.txt" --exclude "*.gz" dir/ s3://bucket
 
-	11. Sync all files to S3 bucket but include the only ones with txt and gz extension
+	12. Sync all files to S3 bucket but include the only ones with txt and gz extension
 		 > s5cmd {{.HelpName}} --include "*.txt" --include "*.gz" dir/ s3://bucket
 `
 
@@ -81,6 +84,10 @@ func NewSyncCommandFlags() []cli.Flag {
 		&cli.BoolFlag{
 			Name:  "size-only",
 			Usage: "make size of object only criteria to decide whether an object should be synced",
+		},
+		&cli.BoolFlag{
+			Name:  "checksum",
+			Usage: "compare the content (checksum or ETag) of objects that have the same size, instead of their modification time; reads every such local file",
 		},
 		&cli.BoolFlag{
 			Name:  "exit-on-error",
@@ -171,6 +178,7 @@ type Sync struct {
 	// flags
 	delete      bool
 	sizeOnly    bool
+	checksum    bool
 	exitOnError bool
 	exclude     []string
 	include     []string
@@ -204,6 +212,7 @@ func NewSync(c *cli.Context) Sync {
 		// flags
 		delete:      c.Bool("delete"),
 		sizeOnly:    c.Bool("size-only"),
+		checksum:    c.Bool("checksum"),
 		exitOnError: c.Bool("exit-on-error"),
 		exclude:     c.StringSlice("exclude"),
 		include:     c.StringSlice("include"),
@@ -293,8 +302,8 @@ func (s Sync) Run(c *cli.Context) error {
 	sourceObjects = nil
 	destObjects = nil
 
-	strategy := NewStrategy(s.sizeOnly) // create comparison strategy.
-	pipeReader, pipeWriter := io.Pipe() // create a reader, writer pipe to pass commands to run
+	strategy := NewStrategy(s.sizeOnly, s.checksum) // create comparison strategy.
+	pipeReader, pipeWriter := io.Pipe()             // create a reader, writer pipe to pass commands to run
 
 	// If Run returns early (e.g. the context is cancelled), closing the reader
 	// makes pending writes fail instead of blocking planRun forever.
@@ -539,6 +548,11 @@ func (s Sync) planRun(
 		"raw": true,
 	}
 
+	commonDifferentSizeFlags := map[string]interface{}{
+		"raw":      true,
+		"checksum": nil,
+	}
+
 	// it should wait until both of the child goroutines for onlySource and common channels
 	// are completed before closing the WriteCloser w to ensure that all URLs are processed.
 	var wg sync.WaitGroup
@@ -586,7 +600,13 @@ func (s Sync) planRun(
 				continue
 			}
 
-			command, err := generateCommand(c, "cp", defaultFlags, curSourceURL, curDestURL)
+			flags := defaultFlags
+			if s.checksum && sourceObject.Size != destObject.Size {
+				// the sizes differ, so the content differs too and there is
+				// nothing to compare when the object is copied.
+				flags = commonDifferentSizeFlags
+			}
+			command, err := generateCommand(c, "cp", flags, curSourceURL, curDestURL)
 			if err != nil {
 				printDebug(s.op, err, curSourceURL, curDestURL)
 				continue

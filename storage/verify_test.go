@@ -180,17 +180,13 @@ func TestCompareFileCompositeChecksum(t *testing.T) {
 	assert.Equal(t, c.Method, "CRC32C of parts")
 	assert.DeepEqual(t, f.heads, []int64{0, 1}) // no per part requests needed
 
-	// a changed byte does not match. Without ExactParts that is unknown, the
-	// layout was assumed to be regular.
+	// a changed byte does not match, the parts are checked one by one and
+	// the part is named.
 	bad := data[:150] + "X" + data[151:]
 	f = multipart(t, data, 100, ChecksumCRC32C, false)
 	c = compare(t, f, bad, CompareOptions{})
-	assert.Equal(t, c.Result, CompareUnknown)
-
-	// With ExactParts it is told apart, and the part is named.
-	f = multipart(t, data, 100, ChecksumCRC32C, false)
-	c = compare(t, f, bad, CompareOptions{ExactParts: true})
 	assert.Equal(t, c.Result, CompareDifferent)
+	assert.DeepEqual(t, f.heads, []int64{0, 1, 2, 3}) // part 1 is not asked twice
 	assert.Assert(t, strings.HasPrefix(c.Detail, "part 2:"), c.Detail)
 }
 
@@ -209,10 +205,9 @@ func TestCompareFileCompositeIrregularParts(t *testing.T) {
 	}
 	f.info = Integrity{Size: int64(len(data)), Checksums: []ObjectChecksum{{ChecksumSHA256, compositeValue(ChecksumSHA256.newHash, raw)}}}
 
-	// parts of different sizes are not reproduced from equal parts, but the
-	// exact comparison handles them.
-	assert.Equal(t, compare(t, f, data, CompareOptions{}).Result, CompareUnknown)
-	c := compare(t, f, data, CompareOptions{ExactParts: true})
+	// parts of different sizes are not reproduced from equal parts, so every
+	// part is checked.
+	c := compare(t, f, data, CompareOptions{})
 	assert.Equal(t, c.Result, CompareEqual)
 	assert.DeepEqual(t, f.heads[len(f.heads)-3:], []int64{1, 2, 3})
 }
@@ -222,13 +217,13 @@ func TestCompareFileCompositeWithoutPartSupport(t *testing.T) {
 	f := multipart(t, data, 100, ChecksumCRC32, true)
 
 	// the server cannot report part sizes: the configured part size is used.
-	c := compare(t, f, data, CompareOptions{PartSizes: []int64{100}, ExactParts: true})
+	c := compare(t, f, data, CompareOptions{PartSizes: []int64{100}})
 	assert.Equal(t, c.Result, CompareEqual)
 
 	// without the right hint it is unknown, and not different.
-	c = compare(t, f, data, CompareOptions{PartSizes: []int64{70}, ExactParts: true})
+	c = compare(t, f, data, CompareOptions{PartSizes: []int64{70}})
 	assert.Equal(t, c.Result, CompareUnknown)
-	c = compare(t, f, data, CompareOptions{ExactParts: true})
+	c = compare(t, f, data, CompareOptions{})
 	assert.Equal(t, c.Result, CompareUnknown)
 }
 
@@ -240,17 +235,11 @@ func TestCompareFileMultipartETag(t *testing.T) {
 	assert.Equal(t, c.Result, CompareEqual)
 	assert.Equal(t, c.Method, "multipart ETag")
 
-	// a mismatch is not proof of a different file: parts may be irregular.
+	// the server tells the size of every part, so the layout is known and
+	// a mismatch is a real one.
 	bad := "X" + data[1:]
 	c = compare(t, f, bad, CompareOptions{})
-	assert.Equal(t, c.Result, CompareUnknown)
-	assert.Assert(t, strings.Contains(c.Detail, "could not be reproduced"), c.Detail)
-
-	// when the server tells the size of every part, the layout is known and
-	// a mismatch is a real one.
-	c = compare(t, f, bad, CompareOptions{ExactParts: true})
 	assert.Equal(t, c.Result, CompareDifferent)
-	assert.Equal(t, compare(t, f, data, CompareOptions{ExactParts: true}).Result, CompareEqual)
 
 	// The part size from the configuration is used when the server does not
 	// report part sizes.
@@ -262,7 +251,7 @@ func TestCompareFileMultipartETag(t *testing.T) {
 
 	// and a server that ignores part numbers never gives a definite answer
 	// for a layout it cannot see.
-	c = compare(t, f, "X"+data[1:], CompareOptions{PartSizes: []int64{100}, ExactParts: true})
+	c = compare(t, f, "X"+data[1:], CompareOptions{PartSizes: []int64{100}})
 	assert.Equal(t, c.Result, CompareUnknown)
 }
 
@@ -279,9 +268,8 @@ func TestCompareFileMultipartETagIrregularParts(t *testing.T) {
 	d := md5.Sum(etagInput)
 	f.info = Integrity{Size: int64(len(data)), ETag: hex.EncodeToString(d[:]) + "-3"}
 
-	assert.Equal(t, compare(t, f, data, CompareOptions{}).Result, CompareUnknown)
-	assert.Equal(t, compare(t, f, data, CompareOptions{ExactParts: true}).Result, CompareEqual)
-	assert.Equal(t, compare(t, f, "X"+data[1:], CompareOptions{ExactParts: true}).Result, CompareDifferent)
+	assert.Equal(t, compare(t, f, data, CompareOptions{}).Result, CompareEqual)
+	assert.Equal(t, compare(t, f, "X"+data[1:], CompareOptions{}).Result, CompareDifferent)
 }
 
 func TestCompareFileEmpty(t *testing.T) {

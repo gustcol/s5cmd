@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 
 	"github.com/aws/aws-sdk-go/aws"
@@ -188,19 +189,19 @@ func checksumHeaderName(alg ChecksumAlgorithm) string {
 // reads that must not count as transferred bytes go through ReadAtNoProgress.
 type progressReader struct {
 	*os.File
-	counted   int64
-	uncounted int64
+	counted   atomic.Int64
+	uncounted atomic.Int64
 }
 
 func (p *progressReader) ReadAt(b []byte, off int64) (int, error) {
 	n, err := p.File.ReadAt(b, off)
-	p.counted += int64(n)
+	p.counted.Add(int64(n))
 	return n, err
 }
 
 func (p *progressReader) ReadAtNoProgress(b []byte, off int64) (int, error) {
 	n, err := p.File.ReadAt(b, off)
-	p.uncounted += int64(n)
+	p.uncounted.Add(int64(n))
 	return n, err
 }
 
@@ -288,7 +289,7 @@ func TestPutMultipartSendsPartChecksums(t *testing.T) {
 			}
 
 			// hashing reads are not reported as transferred bytes.
-			assert.Assert(t, pr.uncounted >= int64(len(data)), "hashing read %d bytes", pr.uncounted)
+			assert.Assert(t, pr.uncounted.Load() >= int64(len(data)), "hashing read %d bytes", pr.uncounted.Load())
 		})
 	}
 }

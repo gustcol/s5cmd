@@ -261,6 +261,11 @@ func NewCopyCommandFlags() []cli.Flag {
 			Usage: "use the specified version of an object",
 		},
 		&cli.BoolFlag{
+			Name:   "checksum",
+			Usage:  "only overwrite destination if the content differs (used by sync --checksum)",
+			Hidden: true,
+		},
+		&cli.BoolFlag{
 			Name:    "show-progress",
 			Aliases: []string{"sp"},
 			Usage:   "show a progress bar",
@@ -313,6 +318,7 @@ type Copy struct {
 	noClobber             bool
 	ifSizeDiffer          bool
 	ifSourceNewer         bool
+	checksum              bool
 	flatten               bool
 	followSymlinks        bool
 	storageClass          storage.StorageClass
@@ -400,6 +406,7 @@ func NewCopy(c *cli.Context, deleteSource bool) (*Copy, error) {
 		noClobber:             c.Bool("no-clobber"),
 		ifSizeDiffer:          c.Bool("if-size-differ"),
 		ifSourceNewer:         c.Bool("if-source-newer"),
+		checksum:              c.Bool("checksum"),
 		flatten:               c.Bool("flatten"),
 		followSymlinks:        !c.Bool("no-follow-symlinks"),
 		storageClass:          storage.StorageClass(c.String("storage-class")),
@@ -768,8 +775,7 @@ func (c Copy) doDownload(ctx context.Context, srcurl *url.URL, dsturl *url.URL) 
 // and returns nil, because that is not evidence of a bad download.
 func (c Copy) verifyDownload(ctx context.Context, client storage.IntegrityProvider, srcurl, dsturl *url.URL, path string) error {
 	cmp, err := storage.CompareFile(ctx, client, srcurl, path, storage.CompareOptions{
-		PartSizes:  []int64{c.partSize},
-		ExactParts: true,
+		PartSizes: []int64{c.partSize},
 	})
 	if err != nil {
 		return fmt.Errorf("verify: %w", err)
@@ -931,7 +937,7 @@ func (c Copy) doCopy(ctx context.Context, srcurl, dsturl *url.URL, extradata map
 // differs.
 func (c Copy) shouldOverride(ctx context.Context, srcurl *url.URL, dsturl *url.URL) error {
 	// if not asked to override, ignore.
-	if !c.noClobber && !c.ifSizeDiffer && !c.ifSourceNewer {
+	if !c.noClobber && !c.ifSizeDiffer && !c.ifSourceNewer && !c.checksum {
 		return nil
 	}
 
@@ -984,7 +990,90 @@ func (c Copy) shouldOverride(ctx context.Context, srcurl *url.URL, dsturl *url.U
 		}
 	}
 
+	if c.checksum {
+		same, err := c.sameContent(ctx, srcurl, dsturl, srcObj, dstObj)
+		if err != nil {
+			return err
+		}
+		if same {
+			stickyErr = errorpkg.ErrObjectChecksumsMatch
+		} else {
+			stickyErr = nil
+		}
+	}
+
 	return stickyErr
+}
+
+// sameContent reports whether source and destination have the same content,
+// for --checksum. Different sizes are different without reading anything.
+// Otherwise the local file is hashed, or the checksums of the two objects are
+// compared, and this runs in the worker that copies the object, so files are
+// hashed in parallel.
+//
+// When the object does not report anything that can be compared (see
+// storage.CompareFile), it falls back to the size and modification time
+// comparison that sync does by default: the object is the same when it has the
+// same size and the source is not newer.
+func (c Copy) sameContent(ctx context.Context, srcurl, dsturl *url.URL, srcObj, dstObj *storage.Object) (bool, error) {
+	if srcObj.Size != dstObj.Size {
+		return false, nil
+	}
+
+	cmp, err := c.compareContent(ctx, srcurl, dsturl)
+	if err != nil {
+		return false, err
+	}
+
+	same, msg := contentVerdict(cmp, srcObj, dstObj)
+	printDebug(c.op, errors.New(msg), srcurl, dsturl)
+	return same, nil
+}
+
+// contentVerdict turns the result of a content comparison into a decision,
+// and a message for the debug log. An unknown result is decided like the
+// default sync strategy does: same when the sizes match and the source is not
+// newer.
+func contentVerdict(cmp storage.Comparison, srcObj, dstObj *storage.Object) (bool, string) {
+	switch cmp.Result {
+	case storage.CompareEqual:
+		return true, fmt.Sprintf("content is the same, compared with %s", cmp.Method)
+	case storage.CompareDifferent:
+		return false, fmt.Sprintf("content differs, compared with %s: %s", cmp.Method, cmp.Detail)
+	}
+
+	same := srcObj.Size == dstObj.Size && !isSourceNewer(srcObj, dstObj)
+	return same, fmt.Sprintf("cannot compare the content (%s), using size and modification time", cmp.Detail)
+}
+
+func (c Copy) compareContent(ctx context.Context, srcurl, dsturl *url.URL) (storage.Comparison, error) {
+	opts := storage.CompareOptions{PartSizes: []int64{c.partSize}}
+
+	switch {
+	case !srcurl.IsRemote() && dsturl.IsRemote():
+		dstClient, err := storage.NewRemoteClient(ctx, dsturl, c.dstStorageOpts())
+		if err != nil {
+			return storage.Comparison{}, err
+		}
+		return storage.CompareFile(ctx, dstClient, dsturl, srcurl.Absolute(), opts)
+	case srcurl.IsRemote() && !dsturl.IsRemote():
+		srcClient, err := storage.NewRemoteClient(ctx, srcurl, c.storageOpts)
+		if err != nil {
+			return storage.Comparison{}, err
+		}
+		return storage.CompareFile(ctx, srcClient, srcurl, dsturl.Absolute(), opts)
+	case srcurl.IsRemote() && dsturl.IsRemote():
+		srcClient, err := storage.NewRemoteClient(ctx, srcurl, c.storageOpts)
+		if err != nil {
+			return storage.Comparison{}, err
+		}
+		dstClient, err := storage.NewRemoteClient(ctx, dsturl, c.dstStorageOpts())
+		if err != nil {
+			return storage.Comparison{}, err
+		}
+		return storage.CompareObjects(ctx, srcClient, srcurl, dstClient, dsturl)
+	}
+	return storage.Comparison{Detail: "local to local is not supported"}, nil
 }
 
 // isSourceNewer reports whether srcObj was modified after dstObj. If either
@@ -1140,6 +1229,10 @@ func validateCopyCommand(c *cli.Context) error {
 
 	if err := validateChecksumAlgorithm(c, srcurl, dsturl); err != nil {
 		return err
+	}
+
+	if c.Bool("checksum") && c.Bool("size-only") {
+		return fmt.Errorf("--checksum and --size-only cannot be used together")
 	}
 
 	if c.Bool("verify") && (!srcurl.IsRemote() || dsturl.IsRemote()) {

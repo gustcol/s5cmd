@@ -530,6 +530,19 @@ src > dst  |  src = dst   |  ❌
 src <= dst  |  src != dst  |  ✅
 src <= dst  |  src == dst  |  ❌
 
+###### Checksum
+`--checksum` compares the content of objects, not their modification time. The default strategy cannot see a file that was changed to something of the same size when its modification time is not newer than the object (restored from a backup, copied with preserved times, edited by a tool that resets the time), and `--size-only` cannot either. With `--checksum`:
+
+* an object with a different size is copied, without reading anything;
+* for objects with the same size the local file is hashed and compared with what S3 stores for the object: its additional checksum (see `--checksum-algorithm`), or its ETag when that is an MD5. Multipart objects are compared with the checksum of their parts, or with the multipart ETag, reproduced from the part sizes the server reports. Between two buckets no data is read, the checksums or ETags of the two objects are compared;
+* the same content is skipped even when the source is newer, so `touch`ing a file does not upload it again.
+
+    s5cmd sync --checksum dir/ s3://bucket/prefix/
+
+The cost is that every local file that has the same size as its object is read in full, so syncing a large tree this way reads all of it, where the default strategy reads nothing. The hashing runs in the worker that handles the object, so it is as parallel as `--numworkers`. S3 is asked for the checksums of each such object with one extra `HEAD` request (and one per part for a multipart object whose content differs).
+
+If an object cannot be compared (it is encrypted with KMS or a customer key and has no additional checksum, or it is a multipart object whose part layout cannot be reproduced, for example on a server that does not report part sizes), `s5cmd` falls back to the default size and modification time rule for that object and writes a `cannot compare the content` line to the debug log. Upload with `--checksum-algorithm` to make objects comparable. `--checksum` cannot be used with `--size-only`.
+
 ### Dry run
 `--dry-run` flag will output what operations will be performed without actually
 carrying out those operations.

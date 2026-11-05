@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/s3"
@@ -401,4 +402,220 @@ func TestVerifyOnlyAppliesToDownloads(t *testing.T) {
 	result := icmd.RunCmd(s5cmd("cp", "--verify", filepath.ToSlash(workdir.Join("file")), fmt.Sprintf("s3://%v/", bucket)))
 	result.Assert(t, icmd.Expected{ExitCode: 1})
 	assert.Assert(t, strings.Contains(result.Stderr(), "--verify only applies to downloads"), result.Stderr())
+}
+
+// setMtime sets the modification time of a file.
+func setMtime(t *testing.T, path string, mtime time.Time) {
+	t.Helper()
+	assert.NilError(t, os.Chtimes(path, mtime, mtime))
+}
+
+// TestSyncChecksum covers the case that motivates --checksum: a file that was
+// changed without changing its size, with a modification time that is not
+// newer than the object.
+func TestSyncChecksumUpload(t *testing.T) {
+	t.Parallel()
+
+	for _, alg := range []string{"", "CRC32C", "SHA256"} {
+		alg := alg
+		t.Run("algorithm="+alg, func(t *testing.T) {
+			t.Parallel()
+
+			layer := newChecksumLayer()
+			s3client, s5cmd := setup(t, withChecksumLayer(layer))
+			bucket := s3BucketFromTestName(t)
+			createBucket(t, s3client, bucket)
+
+			workdir := fs.NewDir(t, bucket,
+				fs.WithFile("same.txt", "same content"),
+				fs.WithFile("changed.txt", "aaaa"),
+				fs.WithFile("touched.txt", "touched"),
+				fs.WithFile("grown.txt", "short"))
+			defer workdir.Remove()
+			dir := filepath.ToSlash(workdir.Path()) + "/"
+			dst := fmt.Sprintf("s3://%v/", bucket)
+
+			first := []string{"sync"}
+			if alg != "" {
+				first = append(first, "--checksum-algorithm", alg)
+			}
+			icmd.RunCmd(s5cmd(append(first, dir, dst)...)).Assert(t, icmd.Success)
+
+			// changed.txt gets other content of the same size, with an old
+			// modification time; touched.txt only gets a newer one; grown.txt
+			// changes size.
+			old := time.Now().Add(-2 * time.Hour)
+			assert.NilError(t, os.WriteFile(workdir.Join("changed.txt"), []byte("bbbb"), 0o644))
+			setMtime(t, workdir.Join("changed.txt"), old)
+			setMtime(t, workdir.Join("touched.txt"), time.Now().Add(time.Hour))
+			assert.NilError(t, os.WriteFile(workdir.Join("grown.txt"), []byte("much longer"), 0o644))
+			setMtime(t, workdir.Join("grown.txt"), old)
+			setMtime(t, workdir.Join("same.txt"), old)
+
+			// the default strategy misses the change, and copies the touched
+			// file and the one that changed size.
+			result := icmd.RunCmd(s5cmd("--log", "debug", "sync", dir, dst))
+			result.Assert(t, icmd.Success)
+			assert.Assert(t, ensureS3Object(s3client, bucket, "changed.txt", "aaaa"))
+			assert.Assert(t, strings.Contains(result.Stdout(), "touched.txt"), result.Stdout())
+
+			// reset the object of touched.txt so both runs start the same.
+			putFile(t, s3client, bucket, "touched.txt", "touched")
+
+			result = icmd.RunCmd(s5cmd("--log", "debug", "sync", "--checksum", dir, dst))
+			result.Assert(t, icmd.Success)
+
+			assert.Assert(t, ensureS3Object(s3client, bucket, "changed.txt", "bbbb"))
+			assert.Assert(t, ensureS3Object(s3client, bucket, "grown.txt", "much longer"))
+			assert.Assert(t, ensureS3Object(s3client, bucket, "same.txt", "same content"))
+			assert.Assert(t, ensureS3Object(s3client, bucket, "touched.txt", "touched"))
+
+			out := result.Stdout()
+			assert.Assert(t, strings.Contains(out, "changed.txt"), out)
+			// same content: not copied, even though touched.txt is newer.
+			assert.Assert(t, !strings.Contains(out, "cp "+workdir.Join("same.txt")), out)
+			assert.Assert(t, !strings.Contains(out, "cp "+workdir.Join("touched.txt")), out)
+			assert.Assert(t, strings.Contains(result.Stderr(), "content is the same"), result.Stderr())
+		})
+	}
+}
+
+func TestSyncChecksumDownload(t *testing.T) {
+	t.Parallel()
+
+	s3client, s5cmd := setup(t)
+	bucket := s3BucketFromTestName(t)
+	createBucket(t, s3client, bucket)
+	putFile(t, s3client, bucket, "changed.txt", "aaaa")
+	putFile(t, s3client, bucket, "same.txt", "same")
+
+	workdir := fs.NewDir(t, bucket, fs.WithFile("changed.txt", "bbbb"), fs.WithFile("same.txt", "same"))
+	defer workdir.Remove()
+	future := time.Now().Add(time.Hour)
+	setMtime(t, workdir.Join("changed.txt"), future)
+	setMtime(t, workdir.Join("same.txt"), future)
+	dir := filepath.ToSlash(workdir.Path()) + "/"
+
+	// the local files are newer, so the default strategy keeps them.
+	icmd.RunCmd(s5cmd("sync", fmt.Sprintf("s3://%v/*", bucket), dir)).Assert(t, icmd.Success)
+	got, _ := os.ReadFile(workdir.Join("changed.txt"))
+	assert.Equal(t, string(got), "bbbb")
+
+	result := icmd.RunCmd(s5cmd("sync", "--checksum", fmt.Sprintf("s3://%v/*", bucket), dir))
+	result.Assert(t, icmd.Success)
+	got, _ = os.ReadFile(workdir.Join("changed.txt"))
+	assert.Equal(t, string(got), "aaaa")
+	assert.Assert(t, !strings.Contains(result.Stdout(), "same.txt"), result.Stdout())
+}
+
+func TestSyncChecksumRemoteToRemote(t *testing.T) {
+	t.Parallel()
+
+	layer := newChecksumLayer()
+	s3client, s5cmd := setup(t, withChecksumLayer(layer))
+	src, dst := s3BucketFromTestNameWithPrefix(t, "src"), s3BucketFromTestNameWithPrefix(t, "dst")
+	createBucket(t, s3client, src)
+	createBucket(t, s3client, dst)
+	putFile(t, s3client, src, "changed.txt", "aaaa")
+	putFile(t, s3client, src, "same.txt", "same")
+	time.Sleep(1100 * time.Millisecond) // the destination is newer
+	putFile(t, s3client, dst, "changed.txt", "bbbb")
+	putFile(t, s3client, dst, "same.txt", "same")
+
+	result := icmd.RunCmd(s5cmd("sync", "--checksum", fmt.Sprintf("s3://%v/*", src), fmt.Sprintf("s3://%v/", dst)))
+	result.Assert(t, icmd.Success)
+
+	assert.Assert(t, ensureS3Object(s3client, dst, "changed.txt", "aaaa"))
+	assert.Assert(t, !strings.Contains(result.Stdout(), "same.txt"), result.Stdout())
+}
+
+// A multipart object is compared with the checksum of its parts, or with its
+// multipart ETag.
+func TestSyncChecksumMultipart(t *testing.T) {
+	t.Parallel()
+
+	for _, alg := range []string{"", "CRC32C"} {
+		alg := alg
+		t.Run("algorithm="+alg, func(t *testing.T) {
+			t.Parallel()
+
+			layer := newChecksumLayer()
+			s3client, s5cmd := setup(t, withChecksumLayer(layer))
+			bucket := s3BucketFromTestName(t)
+			createBucket(t, s3client, bucket)
+
+			content := randomContent(12 << 20)
+			workdir := fs.NewDir(t, bucket, fs.WithFile("big.bin", content))
+			defer workdir.Remove()
+			dir := filepath.ToSlash(workdir.Path()) + "/"
+			dst := fmt.Sprintf("s3://%v/", bucket)
+
+			up := []string{"sync", "--part-size", "5"}
+			if alg != "" {
+				up = append(up, "--checksum-algorithm", alg)
+			}
+			icmd.RunCmd(s5cmd(append(up, dir, dst)...)).Assert(t, icmd.Success)
+
+			old := time.Now().Add(-2 * time.Hour)
+			setMtime(t, workdir.Join("big.bin"), old)
+
+			// unchanged: skipped.
+			result := icmd.RunCmd(s5cmd("sync", "--checksum", "--part-size", "5", dir, dst))
+			result.Assert(t, icmd.Success)
+			assert.Assert(t, !strings.Contains(result.Stdout(), "big.bin"), result.Stdout())
+
+			// one byte in the middle part changed, same size, old mtime.
+			changed := []byte(content)
+			changed[7<<20] ^= 0xff
+			assert.NilError(t, os.WriteFile(workdir.Join("big.bin"), changed, 0o644))
+			setMtime(t, workdir.Join("big.bin"), old)
+
+			result = icmd.RunCmd(s5cmd("sync", "--part-size", "5", dir, dst))
+			result.Assert(t, icmd.Success)
+			assert.Assert(t, !strings.Contains(result.Stdout(), "big.bin"), "the default strategy cannot see it: "+result.Stdout())
+
+			result = icmd.RunCmd(s5cmd("sync", "--checksum", "--part-size", "5", dir, dst))
+			result.Assert(t, icmd.Success)
+			assert.Assert(t, strings.Contains(result.Stdout(), "big.bin"), result.Stdout())
+			assert.Assert(t, ensureS3Object(s3client, bucket, "big.bin", string(changed)))
+		})
+	}
+}
+
+// When the object cannot be compared, sync --checksum falls back to size and
+// modification time, and says so in the debug log.
+func TestSyncChecksumFallback(t *testing.T) {
+	t.Parallel()
+
+	layer := newChecksumLayer()
+	layer.setSSEKMS()
+	s3client, s5cmd := setup(t, withChecksumLayer(layer))
+	bucket := s3BucketFromTestName(t)
+	createBucket(t, s3client, bucket)
+
+	workdir := fs.NewDir(t, bucket, fs.WithFile("a.txt", "aaaa"), fs.WithFile("b.txt", "bbbb"))
+	defer workdir.Remove()
+	dir := filepath.ToSlash(workdir.Path()) + "/"
+	dst := fmt.Sprintf("s3://%v/", bucket)
+	icmd.RunCmd(s5cmd("sync", dir, dst)).Assert(t, icmd.Success)
+
+	// a.txt: same size, old mtime. b.txt: same size, new mtime.
+	assert.NilError(t, os.WriteFile(workdir.Join("a.txt"), []byte("cccc"), 0o644))
+	setMtime(t, workdir.Join("a.txt"), time.Now().Add(-2*time.Hour))
+	setMtime(t, workdir.Join("b.txt"), time.Now().Add(time.Hour))
+
+	result := icmd.RunCmd(s5cmd("--log", "debug", "sync", "--checksum", dir, dst))
+	result.Assert(t, icmd.Success)
+	assert.Assert(t, strings.Contains(result.Stderr(), "cannot compare the content"), result.Stderr())
+	assert.Assert(t, ensureS3Object(s3client, bucket, "a.txt", "aaaa"), "falls back to the default strategy")
+	assert.Assert(t, strings.Contains(result.Stdout(), "b.txt"), result.Stdout())
+}
+
+func TestSyncChecksumAndSizeOnlyAreExclusive(t *testing.T) {
+	t.Parallel()
+
+	_, s5cmd := setup(t)
+	result := icmd.RunCmd(s5cmd("sync", "--checksum", "--size-only", "s3://bucket/*", "."))
+	result.Assert(t, icmd.Expected{ExitCode: 1})
+	assert.Assert(t, strings.Contains(result.Stderr(), "cannot be used together"), result.Stderr())
 }

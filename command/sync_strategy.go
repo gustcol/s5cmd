@@ -11,12 +11,26 @@ type SyncStrategy interface {
 	ShouldSync(srcObject, dstObject *storage.Object) error
 }
 
-func NewStrategy(sizeOnly bool) SyncStrategy {
-	if sizeOnly {
+func NewStrategy(sizeOnly, checksum bool) SyncStrategy {
+	switch {
+	case checksum:
+		return &ChecksumStrategy{}
+	case sizeOnly:
 		return &SizeOnlyStrategy{}
-	} else {
+	default:
 		return &SizeAndModificationStrategy{}
 	}
+}
+
+// ChecksumStrategy hands every object that exists on both sides to the copy
+// command, which compares the content when it runs (cp --checksum) and skips
+// the object if it is the same. The comparison reads the local file, so it is
+// not done here: the planner is a single goroutine, and the copy commands run
+// in parallel.
+type ChecksumStrategy struct{}
+
+func (s *ChecksumStrategy) ShouldSync(srcObj, dstObj *storage.Object) error {
+	return nil
 }
 
 // SizeOnlyStrategy determines to sync based on objects' file sizes.
