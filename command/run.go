@@ -98,6 +98,7 @@ func (r Run) Run(ctx context.Context) error {
 
 	reader := NewReader(ctx, r.reader)
 
+	var canceled error
 	lineno := -1
 	for line := range reader.Read() {
 		lineno++
@@ -147,7 +148,10 @@ func (r Run) Run(ctx context.Context) error {
 			return cmd.Run(ctx)
 		}
 
-		pm.Run(fn, waiter)
+		if !pm.RunContext(ctx, fn, waiter) {
+			canceled = ctx.Err()
+			break
+		}
 	}
 
 	waiter.Wait()
@@ -157,7 +161,7 @@ func (r Run) Run(ctx context.Context) error {
 		printError(commandFromContext(r.c), r.c.Command.Name, reader.Err())
 	}
 
-	return multierror.Append(merrorWaiter, reader.Err()).ErrorOrNil()
+	return multierror.Append(merrorWaiter, reader.Err(), canceled).ErrorOrNil()
 }
 
 // Reader is a cancelable reader.
@@ -194,7 +198,12 @@ func (r *Reader) read() {
 			// it returns the data read before the error and the error itself (often io.EOF).
 			line, err := r.ReadString('\n')
 			if line != "" {
-				r.linech <- line
+				select {
+				case r.linech <- line:
+				case <-r.ctx.Done():
+					r.err = r.ctx.Err()
+					return
+				}
 			}
 			if err != nil {
 				if err == io.EOF {

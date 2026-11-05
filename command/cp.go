@@ -560,7 +560,9 @@ func (c Copy) Run(ctx context.Context) error {
 		default:
 			panic("unexpected src-dst pair")
 		}
-		parallel.Run(task, waiter)
+		if !parallel.RunContext(ctx, task, waiter) {
+			break
+		}
 	}
 	waiter.Wait()
 	<-errDoneCh
