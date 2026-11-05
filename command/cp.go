@@ -640,6 +640,17 @@ func (c Copy) prepareUploadTask(
 }
 
 // doDownload is used to fetch a remote object and save as a local object.
+// dstStorageOpts returns the storage options for talking to the destination:
+// the common options, with the region replaced by --destination-region when
+// that flag is set.
+func (c Copy) dstStorageOpts() storage.Options {
+	opts := c.storageOpts
+	if c.dstRegion != "" {
+		opts.SetRegion(c.dstRegion)
+	}
+	return opts
+}
+
 func (c Copy) doDownload(ctx context.Context, srcurl *url.URL, dsturl *url.URL) error {
 	srcClient, err := storage.NewRemoteClient(ctx, srcurl, c.storageOpts)
 	if err != nil {
@@ -718,11 +729,7 @@ func (c Copy) doUpload(ctx context.Context, srcurl *url.URL, dsturl *url.URL, ex
 		return err
 	}
 
-	// override destination region if set
-	if c.dstRegion != "" {
-		c.storageOpts.SetRegion(c.dstRegion)
-	}
-	dstClient, err := storage.NewRemoteClient(ctx, dsturl, c.storageOpts)
+	dstClient, err := storage.NewRemoteClient(ctx, dsturl, c.dstStorageOpts())
 	if err != nil {
 		return err
 	}
@@ -782,11 +789,7 @@ func (c Copy) doUpload(ctx context.Context, srcurl *url.URL, dsturl *url.URL, ex
 }
 
 func (c Copy) doCopy(ctx context.Context, srcurl, dsturl *url.URL, extradata map[string]string) error {
-	// override destination region if set
-	if c.dstRegion != "" {
-		c.storageOpts.SetRegion(c.dstRegion)
-	}
-	dstClient, err := storage.NewClient(ctx, dsturl, c.storageOpts)
+	dstClient, err := storage.NewClient(ctx, dsturl, c.dstStorageOpts())
 	if err != nil {
 		return err
 	}
@@ -864,7 +867,7 @@ func (c Copy) shouldOverride(ctx context.Context, srcurl *url.URL, dsturl *url.U
 		return err
 	}
 
-	dstClient, err := storage.NewClient(ctx, dsturl, c.storageOpts)
+	dstClient, err := storage.NewClient(ctx, dsturl, c.dstStorageOpts())
 	if err != nil {
 		return err
 	}
