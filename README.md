@@ -1,7 +1,54 @@
-[![Go Report](https://goreportcard.com/badge/github.com/peak/s5cmd/v2)](https://goreportcard.com/report/github.com/peak/s5cmd/v2) ![Github Actions Status](https://github.com/peak/s5cmd/actions/workflows/ci.yml/badge.svg)
+![Github Actions Status](https://github.com/gustcol/s5cmd/actions/workflows/ci.yml/badge.svg)
 
 ![](./doc/s5cmd_header.jpg)
 
+## About this fork
+
+This is a maintained fork of [peak/s5cmd](https://github.com/peak/s5cmd). Upstream has had no
+commits since June 2025 and no release since v2.3.0 (December 2024), while bug reports and pull
+requests keep piling up. This fork keeps `s5cmd` compatible with upstream (same commands, same
+flags) and ships fixes for the bugs that hurt in production.
+
+Every change is tested with the unit and end-to-end suites and also against a real MinIO server
+over the network, comparing the behavior with upstream v2.3.0.
+
+### Already on `master`
+
+| Issue | What was wrong | What changed |
+|---|---|---|
+| [#851](https://github.com/peak/s5cmd/issues/851) | `--log debug` and `--log trace` printed to stdout, mixed with the command output, which broke scripts and `--json` pipelines. | DEBUG and TRACE messages go to stderr. Results stay on stdout. **Breaking change** if a script parsed DEBUG lines from stdout. |
+| [#834](https://github.com/peak/s5cmd/issues/834) | Objects whose key ends with `/` (directory markers) could not be deleted, and `rm 's3://bucket/path/*'` skipped them silently. | `rm` deletes them, with `--raw` or with a wildcard. Plain prefixes are still never deleted. `--raw --all-versions` on such a key is rejected with a clear error. |
+| [#839](https://github.com/peak/s5cmd/issues/839) | `cp --no-clobber` checked the destination in the source region, ignoring `--destination-region`. | The existence check uses the destination region, like the copy itself. |
+| [#615](https://github.com/peak/s5cmd/issues/615) | Ctrl+C made `s5cmd` exit with a normal error code, so a shell loop such as `while true; do s5cmd ...; done` kept running. | After cleanup, `s5cmd` terminates itself with the same signal (SIGINT or SIGTERM), so shells and supervisors see it was interrupted. On Windows it exits with code 130. |
+| [#835](https://github.com/peak/s5cmd/issues/835) | `sync` did not compile against newer `lanrat/extsort` releases. | The sort output channels are receive-only. No behavior change. |
+
+### Coming in v2.4.0 (in progress)
+
+Work in progress, listed here so users know what to expect. Each item lands on `master` only
+after review and tests.
+
+- **Security:** refuse object keys that would be written outside the local destination
+  (path traversal on download, [#872](https://github.com/peak/s5cmd/issues/872)).
+- **Data safety:** `sync --delete` must never delete files excluded by `--exclude` or not matched
+  by `--include` ([#815](https://github.com/peak/s5cmd/issues/815)).
+- **Correct exit codes:** `sync` exits non-zero when a transfer fails
+  ([#869](https://github.com/peak/s5cmd/issues/869)).
+- **Regions:** `sync` honors `--source-region` and `--destination-region`
+  ([#816](https://github.com/peak/s5cmd/issues/816)).
+- **Stability:** data race fixes in the progress bar and statistics, no more `os.Exit` or `panic`
+  inside `cp` and `sync`, nil pointer guards, a safe file handle in dry-run mode.
+- **Parallelism:** review of the worker pool and of multipart transfers: bounded queues on huge
+  listings, prompt and clean shutdown of all workers on cancel, an HTTP connection pool sized to
+  the configured parallelism, and documented memory limits. A benchmark covering `--numworkers`
+  and `--concurrency` for many small files and a few large ones.
+- **Toolchain:** a supported Go release, updated dependencies, a vulnerability scan, and CI on
+  Linux, macOS and Windows.
+- **Releases:** binaries for Linux, macOS and Windows on this repository's
+  [Releases](https://github.com/gustcol/s5cmd/releases) page.
+- Smaller fixes: a `B` suffix on human-readable sizes below 1 KiB
+  ([#817](https://github.com/peak/s5cmd/issues/817)).
+
+See [CHANGELOG.md](./CHANGELOG.md) for details per release.
 
 ## Overview
 `s5cmd` is a very fast S3 and local filesystem execution tool. It comes with support
@@ -48,85 +95,39 @@ storage services and local filesystems.
 
 ## Installation
 
-### Official Releases
+### Binaries
 
-#### Binaries
-
-The [Releases](https://github.com/peak/s5cmd/releases) page provides pre-built
-binaries for Linux, macOS and Windows.
-
-#### Homebrew
-
-For macOS, a [homebrew](https://brew.sh) tap is provided:
-
-    brew install peak/tap/s5cmd
-
-### Unofficial Releases (by Community)
-[![Packaging status](https://repology.org/badge/tiny-repos/s5cmd.svg)](https://repology.org/project/s5cmd/versions)
-> **Warning**
-> These releases are maintained by the community. They might be out of date compared to the official releases.
-
-#### MacPorts
-You can also install `s5cmd` from [MacPorts](https://ports.macports.org/port/s5cmd/summary) on macOS:
-
-    sudo port selfupdate
-    sudo port install s5cmd
-
-#### Conda
-`s5cmd` is [included](https://anaconda.org/conda-forge/s5cmd ) in the [conda-forge]( https://conda-forge.org ) channel, and it can be downloaded through the [Conda](https://docs.conda.io/).
-
-> Installing `s5cmd` from the `conda-forge` channel can be achieved by adding `conda-forge` to your channels with:
-> ```
-> conda config --add channels conda-forge
-> conda config --set channel_priority strict
-> ```
->
-> Once the `conda-forge` channel has been enabled, `s5cmd` can be installed with `conda`:
->
-> ```
-> conda install s5cmd
-> ```
-ps.  Quoted from [s5cmd feedstock](https://github.com/conda-forge/s5cmd-feedstock). You can also find further instructions on its [README](https://github.com/conda-forge/s5cmd-feedstock/blob/main/README.md).
-
-#### FreeBSD
-
-On FreeBSD you can install s5cmd as a package:
-
-```
-pkg install s5cmd
-```
-
-or via ports:
-
-```
-cd /usr/ports/net/s5cmd
-make install clean
-```
+Pre-built binaries for Linux, macOS and Windows will be on this fork's
+[Releases](https://github.com/gustcol/s5cmd/releases) page starting with v2.4.0. Until then,
+build from source.
 
 ### Build from source
 
-You can build `s5cmd` from source if you have [Go](https://golang.org/dl/) 1.19+
-installed.
+You need a recent [Go](https://go.dev/dl/) toolchain and `make`.
 
-    go install github.com/peak/s5cmd/v2@master
+    git clone https://github.com/gustcol/s5cmd
+    cd s5cmd
+    make build
+    ./s5cmd version
 
-⚠️ Please note that building from `master` is not guaranteed to be stable since
-development happens on `master` branch.
+`go install github.com/gustcol/s5cmd/v2@master` does not work yet, because the module path is
+still `github.com/peak/s5cmd/v2` to stay compatible with upstream imports.
 
 ### Docker
 
-#### Hub
-    $ docker pull peakcom/s5cmd
-    $ docker run --rm -v ~/.aws:/root/.aws peakcom/s5cmd <S3 operation>
+    git clone https://github.com/gustcol/s5cmd && cd s5cmd
+    docker build -t s5cmd .
+    docker run --rm -v ~/.aws:/root/.aws s5cmd <S3 operation>
 
-ℹ️ `/aws` directory is the working directory of the image. Mounting your current working directory to it allows you to run `s5cmd` as if it was installed in your system;
+ℹ️ `/aws` is the working directory of the image. Mount your current directory there to run
+`s5cmd` as if it were installed locally:
 
-    docker run --rm -v $(pwd):/aws -v ~/.aws:/root/.aws peakcom/s5cmd <S3 operation>
+    docker run --rm -v $(pwd):/aws -v ~/.aws:/root/.aws s5cmd <S3 operation>
 
-#### Build
-    $ git clone https://github.com/peak/s5cmd && cd s5cmd
-    $ docker build -t s5cmd .
-    $ docker run --rm -v ~/.aws:/root/.aws s5cmd <S3 operation>
+### Upstream packages
+
+Homebrew (`peak/tap/s5cmd`), the `peakcom/s5cmd` Docker image, MacPorts, conda-forge and the
+FreeBSD port install **upstream** s5cmd v2.3.0, without the fixes above.
 
 ## Usage
 
