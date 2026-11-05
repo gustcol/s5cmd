@@ -170,6 +170,31 @@ requests to AWS. Credentials can be provided in a [variety of ways](https://docs
     s5cmd --no-sign-request ls s3://public-bucket/
     ```
 
+### TLS and HTTP protocol options
+
+```shell
+# private CA
+s5cmd --ca-cert /etc/ssl/my-ca.pem --endpoint-url https://s3.internal:9000 ls
+
+# mutual TLS
+s5cmd --ca-cert my-ca.pem --client-cert client.pem --client-key client.key \
+    --endpoint-url https://s3.internal:9000 ls s3://bucket
+
+# force HTTP/1.1 or HTTP/2
+s5cmd --transport http1 cp 's3://bucket/*' .
+S5CMD_TRANSPORT=http2 s5cmd cp 's3://bucket/*' .
+```
+
+- `--ca-cert FILE`: PEM bundle of trusted CAs. It **replaces** the system root pool, the same way `AWS_CA_BUNDLE` and `curl --cacert` do. If `AWS_CA_BUNDLE` (or `ca_bundle` in the shared AWS config) is also set, `--ca-cert` wins. Without `--ca-cert`, `AWS_CA_BUNDLE` is honored as the AWS SDK does.
+- `--client-cert FILE` and `--client-key FILE`: PEM client certificate and key for mutual TLS. Both are required together. The SDK variables `AWS_SDK_GO_CLIENT_TLS_CERT` and `AWS_SDK_GO_CLIENT_TLS_KEY` still work; if both they and the flags are set, the flag certificate is offered first.
+- `--no-verify-ssl` still turns off server certificate verification, whatever the other options say.
+- `--transport auto|http1|http2|http3` (env `S5CMD_TRANSPORT`):
+  - `auto` (default): same as before, the TLS handshake (ALPN) picks HTTP/2 or HTTP/1.1.
+  - `http1`: HTTP/1.1 only. Parallelism comes from many TCP connections, sized by `--numworkers` x `--concurrency`.
+  - `http2`: HTTP/2 only. The request fails if the server does not negotiate `h2`.
+  - `http3`: only in builds made with `-tags http3`. The default build prints `this build has no HTTP/3 support`.
+  - The negotiated protocol (`HTTP/1.1` or `HTTP/2.0`) is logged once per protocol: with `--log debug` when `--transport` is set explicitly, and with `--log trace` for `auto`.
+
 ### Region detection
 
 While executing the commands, `s5cmd` detects the region according to the following order of priority:
