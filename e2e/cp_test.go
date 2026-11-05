@@ -4739,3 +4739,161 @@ func TestCopyMultipleS3ObjectsToAnotherBucketWithContentType(t *testing.T) {
 		assert.Assert(t, ensureS3Object(s3client, dstbucket, filename, content, ensureContentType("video/avi")))
 	}
 }
+
+// cp s3://bucket/* dir/ where some keys contain ".." segments. The objects
+// with such keys are refused, the others are copied, and nothing is written
+// outside dir/. Keys that only contain ".." inside a name are ordinary.
+func TestCopyS3ObjectsToLocalRefusesPathTraversalKeys(t *testing.T) {
+	t.Parallel()
+
+	s3client, s5cmd := setup(t)
+
+	bucket := s3BucketFromTestName(t)
+	createBucket(t, s3client, bucket)
+
+	putFile(t, s3client, bucket, "data/ok.txt", "ok")
+	putFile(t, s3client, bucket, "data/a..b.txt", "dots")
+	putFile(t, s3client, bucket, "data/../../escape.txt", "pwned")
+	putFile(t, s3client, bucket, "../escape2.txt", "pwned")
+
+	// the fake S3 must have kept the raw key, otherwise this test proves nothing.
+	assert.NilError(t, ensureS3Object(s3client, bucket, "data/../../escape.txt", "pwned"))
+
+	workdir := fs.NewDir(t, "somedir", fs.WithDir("dest"))
+	defer workdir.Remove()
+
+	cmd := s5cmd("cp", "s3://"+bucket+"/*", "dest/")
+	result := icmd.RunCmd(cmd, withWorkingDir(workdir))
+
+	result.Assert(t, icmd.Expected{ExitCode: 1})
+
+	assertLines(t, result.Stdout(), map[int]compareFunc{
+		0: contains(`data/a..b.txt`),
+		1: contains(`data/ok.txt`),
+	}, sortInput(true))
+	assert.Assert(t, strings.Contains(result.Stderr(), "escape.txt"), result.Stderr())
+	assert.Assert(t, strings.Contains(result.Stderr(), "escape2.txt"), result.Stderr())
+
+	expected := fs.Expected(t,
+		fs.WithDir("dest",
+			fs.WithDir("data",
+				fs.WithFile("a..b.txt", "dots"),
+				fs.WithFile("ok.txt", "ok"),
+			),
+		),
+	)
+	assert.Assert(t, fs.Equal(workdir.Path(), expected))
+}
+
+// cp --flatten s3://bucket/* dir/ uses only the last element of the key, so
+// "data/../../escape.txt" lands in dir/ as escape.txt. A key whose last
+// element is ".." is refused.
+func TestCopyS3ObjectsToLocalFlattenPathTraversalKeys(t *testing.T) {
+	t.Parallel()
+
+	s3client, s5cmd := setup(t)
+
+	bucket := s3BucketFromTestName(t)
+	createBucket(t, s3client, bucket)
+
+	putFile(t, s3client, bucket, "data/../../escape.txt", "flat")
+	putFile(t, s3client, bucket, "data/..", "dotdot")
+
+	workdir := fs.NewDir(t, "somedir", fs.WithDir("dest"))
+	defer workdir.Remove()
+
+	cmd := s5cmd("cp", "--flatten", "s3://"+bucket+"/*", "dest/")
+	result := icmd.RunCmd(cmd, withWorkingDir(workdir))
+
+	result.Assert(t, icmd.Expected{ExitCode: 1})
+
+	expected := fs.Expected(t,
+		fs.WithDir("dest",
+			fs.WithFile("escape.txt", "flat"),
+		),
+	)
+	assert.Assert(t, fs.Equal(workdir.Path(), expected))
+}
+
+// cp --raw s3://bucket/key dir/ with a single object whose key ends in "..".
+func TestCopyS3ObjectToLocalRawPathTraversalKey(t *testing.T) {
+	t.Parallel()
+
+	s3client, s5cmd := setup(t)
+
+	bucket := s3BucketFromTestName(t)
+	createBucket(t, s3client, bucket)
+
+	putFile(t, s3client, bucket, "data/..", "dotdot")
+
+	workdir := fs.NewDir(t, "somedir", fs.WithDir("dest"))
+	defer workdir.Remove()
+
+	cmd := s5cmd("cp", "--raw", "s3://"+bucket+"/data/..", "dest/")
+	result := icmd.RunCmd(cmd, withWorkingDir(workdir))
+
+	result.Assert(t, icmd.Expected{ExitCode: 1})
+	expected := fs.Expected(t, fs.WithDir("dest"))
+	assert.Assert(t, fs.Equal(workdir.Path(), expected))
+}
+
+// sync s3://bucket/* dir/ refuses keys with ".." segments and syncs the rest.
+func TestSyncS3ObjectsToLocalRefusesPathTraversalKeys(t *testing.T) {
+	t.Parallel()
+
+	s3client, s5cmd := setup(t)
+
+	bucket := s3BucketFromTestName(t)
+	createBucket(t, s3client, bucket)
+
+	putFile(t, s3client, bucket, "data/ok.txt", "ok")
+	putFile(t, s3client, bucket, "data/a..b.txt", "dots")
+	putFile(t, s3client, bucket, "data/../../escape.txt", "pwned")
+
+	workdir := fs.NewDir(t, "somedir", fs.WithDir("dest"))
+	defer workdir.Remove()
+
+	cmd := s5cmd("sync", "s3://"+bucket+"/*", "dest/")
+	result := icmd.RunCmd(cmd, withWorkingDir(workdir))
+
+	result.Assert(t, icmd.Expected{ExitCode: 1})
+	assert.Assert(t, strings.Contains(result.Stderr(), "escape.txt"), result.Stderr())
+
+	expected := fs.Expected(t,
+		fs.WithDir("dest",
+			fs.WithDir("data",
+				fs.WithFile("a..b.txt", "dots"),
+				fs.WithFile("ok.txt", "ok"),
+			),
+		),
+	)
+	assert.Assert(t, fs.Equal(workdir.Path(), expected))
+}
+
+// a normal wildcard download still works and exits 0.
+func TestCopyS3WildcardToLocalStillWorks(t *testing.T) {
+	t.Parallel()
+
+	s3client, s5cmd := setup(t)
+
+	bucket := s3BucketFromTestName(t)
+	createBucket(t, s3client, bucket)
+
+	putFile(t, s3client, bucket, "a/b/c.txt", "c")
+	putFile(t, s3client, bucket, "a/d..e.txt", "d")
+
+	workdir := fs.NewDir(t, "somedir", fs.WithDir("dest"))
+	defer workdir.Remove()
+
+	cmd := s5cmd("cp", "s3://"+bucket+"/a/*", "dest/")
+	result := icmd.RunCmd(cmd, withWorkingDir(workdir))
+	result.Assert(t, icmd.Success)
+
+	expected := fs.Expected(t,
+		fs.WithDir("dest",
+			fs.WithDir("b", fs.WithFile("c.txt", "c")),
+			fs.WithFile("d..e.txt", "d"),
+		),
+	)
+	assert.Assert(t, fs.Equal(workdir.Path(), expected))
+}

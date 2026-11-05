@@ -1,6 +1,8 @@
 package url
 
 import (
+	"errors"
+	"fmt"
 	"path/filepath"
 	"reflect"
 	"regexp"
@@ -640,6 +642,97 @@ func TestToFromBytes(t *testing.T) {
 			}
 			if !url.deepEqual(newURL) {
 				t.Errorf("Not equal")
+			}
+		})
+	}
+}
+
+func TestUnsafeLocalKey(t *testing.T) {
+	t.Parallel()
+
+	testcases := []struct {
+		key     string
+		windows bool
+		unsafe  bool
+	}{
+		{key: "a/b.txt"},
+		{key: "a..b.txt"},
+		{key: "..a/b..", unsafe: false},
+		{key: "a/...//b"},
+		{key: "a/./b"},
+		{key: "/abs/path"},
+		{key: "..", unsafe: true},
+		{key: "../evil", unsafe: true},
+		{key: "a/../../evil", unsafe: true},
+		{key: "a/..", unsafe: true},
+		{key: "a/../b", unsafe: true},
+		{key: `a\..\..\evil`, unsafe: false}, // a plain file name on unix
+		{key: `a\..\..\evil`, windows: true, unsafe: true},
+		{key: `..\evil`, windows: true, unsafe: true},
+		{key: `a\b.txt`, windows: true},
+		{key: `a..b\c.txt`, windows: true},
+		{key: `C:\Windows\evil`, windows: true, unsafe: true},
+		{key: `C:evil`, windows: true, unsafe: true},
+		{key: "C:/evil", windows: true, unsafe: true},
+		{key: "a/b.txt:stream", windows: true, unsafe: true},
+		{key: `\\server\share\evil`, windows: true},
+		{key: "C:/evil", unsafe: false}, // fine on unix, stays inside
+	}
+
+	for _, tc := range testcases {
+		tc := tc
+		t.Run(fmt.Sprintf("%s/windows=%v", tc.key, tc.windows), func(t *testing.T) {
+			t.Parallel()
+			if got := unsafeLocalKey(tc.key, tc.windows); got != tc.unsafe {
+				t.Errorf("unsafeLocalKey(%q, %v) = %v, want %v", tc.key, tc.windows, got, tc.unsafe)
+			}
+		})
+	}
+}
+
+func TestJoinInside(t *testing.T) {
+	t.Parallel()
+
+	testcases := []struct {
+		base   string
+		key    string
+		want   string
+		unsafe bool
+	}{
+		{base: "dest", key: "a/b.txt", want: "dest/a/b.txt"},
+		{base: "dest/", key: "a/b.txt", want: "dest/a/b.txt"},
+		{base: "dest", key: "a..b.txt", want: "dest/a..b.txt"},
+		{base: "dest", key: "/etc/passwd", want: "dest/etc/passwd"},
+		{base: ".", key: "a/b.txt", want: "a/b.txt"},
+		{base: "dest", key: "../b.txt", unsafe: true},
+		{base: "dest", key: "a/../../b.txt", unsafe: true},
+		{base: "dest", key: "..", unsafe: true},
+		{base: "dest", key: "../dest2/b.txt", unsafe: true},
+		{base: ".", key: "../b.txt", unsafe: true},
+		{base: "s3://bucket/prefix/", key: "../b.txt", want: "prefix/../b.txt"},
+	}
+
+	for _, tc := range testcases {
+		tc := tc
+		t.Run(tc.base+"+"+tc.key, func(t *testing.T) {
+			t.Parallel()
+
+			u, err := New(tc.base)
+			if err != nil {
+				t.Fatal(err)
+			}
+			got, err := u.JoinInside(tc.key)
+			if tc.unsafe {
+				if !errors.Is(err, ErrUnsafeLocalPath) {
+					t.Fatalf("expected ErrUnsafeLocalPath, got %v", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got.Path != tc.want {
+				t.Errorf("got %q, want %q", got.Path, tc.want)
 			}
 		})
 	}

@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"encoding/gob"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/url"
 	"path"
@@ -193,6 +194,57 @@ func (u *URL) Dir() string {
 	}
 
 	return basefn(u.Path)
+}
+
+// ErrUnsafeLocalPath is returned when a remote object key cannot be mapped
+// to a path inside the local destination directory.
+var ErrUnsafeLocalPath = errors.New("object key would be written outside the destination")
+
+// unsafeLocalKey reports whether key, taken from a remote object, must not
+// be joined onto a local directory. Keys are arbitrary strings chosen by
+// whoever can write to the bucket.
+//
+// A key is unsafe if any of its path segments is "..", which is a lexical
+// test: names that merely contain dots, such as "a..b.txt", are fine. On
+// Windows, backslash is also a separator, and a colon is refused because it
+// starts a drive or volume prefix ("C:x") or an alternate data stream
+// ("file:stream"). The windows flag is a parameter so both rule sets can be
+// tested on any OS.
+func unsafeLocalKey(key string, windows bool) bool {
+	if windows && strings.Contains(key, ":") {
+		return true
+	}
+	segments := strings.FieldsFunc(key, func(r rune) bool {
+		return r == '/' || (windows && r == '\\')
+	})
+	for _, seg := range segments {
+		if seg == ".." {
+			return true
+		}
+	}
+	return false
+}
+
+// JoinInside is Join for a local destination that must contain the result.
+// It returns an error wrapping ErrUnsafeLocalPath if the key would resolve
+// outside u, instead of rewriting the key. Remote URLs are joined verbatim.
+func (u *URL) JoinInside(s string) (*URL, error) {
+	if u.IsRemote() {
+		return u.Join(s), nil
+	}
+
+	if unsafeLocalKey(s, runtime.GOOS == "windows") {
+		return nil, fmt.Errorf("%w: key %q, destination %q", ErrUnsafeLocalPath, s, u.Path)
+	}
+
+	clone := u.Join(s)
+
+	// Backstop: the joined path must still be under the destination.
+	rel, err := filepath.Rel(filepath.FromSlash(u.Path), filepath.FromSlash(clone.Path))
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || filepath.IsAbs(rel) {
+		return nil, fmt.Errorf("%w: key %q, destination %q", ErrUnsafeLocalPath, s, u.Path)
+	}
+	return clone, nil
 }
 
 // Join joins string and returns new URL.
