@@ -1,6 +1,6 @@
 module github.com/peak/s5cmd/v2
 
-go 1.20
+go 1.26.0
 
 require (
 	github.com/aws/aws-sdk-go v1.44.298
