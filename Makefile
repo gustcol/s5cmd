@@ -47,7 +47,9 @@ check: vet staticcheck unparam semgrep check-fmt check-codegen check-gomod
 
 .PHONY: staticcheck
 staticcheck:
-	@staticcheck -checks 'all,-ST1000' ./...
+	@# SA1019 is off while the code base is still on aws-sdk-go v1, which
+	@# is deprecated as a whole, and on the legacy extsort API.
+	@staticcheck -checks 'all,-ST1000,-SA1019' ./...
 
 .PHONY: unparam
 unparam:
