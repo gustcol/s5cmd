@@ -105,3 +105,13 @@ func TestInfoWritesToStdout(t *testing.T) {
 		t.Errorf("Info did not write to stdout; stdout=%q", stdout)
 	}
 }
+
+// TestCloseMultipleTimes verifies that a second Close does not panic with
+// "close of closed channel".
+func TestCloseMultipleTimes(t *testing.T) {
+	reinitOutputCh()
+	Init("info", false)
+
+	Close()
+	Close()
+}

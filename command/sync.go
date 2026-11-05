@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -18,7 +17,6 @@ import (
 	errorpkg "github.com/peak/s5cmd/v2/error"
 	"github.com/peak/s5cmd/v2/log"
 	"github.com/peak/s5cmd/v2/log/stat"
-	"github.com/peak/s5cmd/v2/parallel"
 	"github.com/peak/s5cmd/v2/storage"
 	"github.com/peak/s5cmd/v2/storage/url"
 )
@@ -182,6 +180,7 @@ func (s Sync) Run(c *cli.Context) error {
 	}
 
 	ctx, cancel := context.WithCancel(c.Context)
+	defer cancel()
 
 	sourceObjects, destObjects, err := s.getSourceAndDestinationObjects(ctx, cancel, srcurl, dsturl)
 	if err != nil {
@@ -209,28 +208,12 @@ func (s Sync) Run(c *cli.Context) error {
 	sourceObjects = nil
 	destObjects = nil
 
-	waiter := parallel.NewWaiter()
-	var (
-		merrorWaiter error
-		errDoneCh    = make(chan struct{})
-	)
-
-	go func() {
-		defer close(errDoneCh)
-		for err := range waiter.Err() {
-			if strings.Contains(err.Error(), "too many open files") {
-				fmt.Println(strings.TrimSpace(fdlimitWarning))
-				fmt.Printf("ERROR %v\n", err)
-
-				os.Exit(1)
-			}
-			printError(s.fullCommand, s.op, err)
-			merrorWaiter = multierror.Append(merrorWaiter, err)
-		}
-	}()
-
 	strategy := NewStrategy(s.sizeOnly) // create comparison strategy.
 	pipeReader, pipeWriter := io.Pipe() // create a reader, writer pipe to pass commands to run
+
+	// If Run returns early (e.g. the context is cancelled), closing the reader
+	// makes pending writes fail instead of blocking planRun forever.
+	defer pipeReader.Close()
 
 	// Create commands in background.
 	var rejected int64 // objects planRun refused to generate a command for
@@ -238,9 +221,9 @@ func (s Sync) Run(c *cli.Context) error {
 
 	err = NewRun(c, pipeReader).Run(ctx)
 	if n := atomic.LoadInt64(&rejected); n > 0 {
-		err = multierror.Append(err, fmt.Errorf("%d object(s) were not synced", n))
+		return multierror.Append(err, fmt.Errorf("%d object(s) were not synced", n)).ErrorOrNil()
 	}
-	return multierror.Append(err, merrorWaiter).ErrorOrNil()
+	return err
 }
 
 // compareObjects compares source and destination objects. It assumes that
@@ -383,11 +366,7 @@ func (s Sync) getSourceAndDestinationObjects(ctx context.Context, cancel context
 		}
 
 		// read and print the external sort errors
-		go func() {
-			for err := range srcErrCh {
-				printError(s.fullCommand, s.op, err)
-			}
-		}()
+		go s.printSortErrors(srcErrCh)
 	}()
 
 	// get destination objects.
@@ -430,14 +409,21 @@ func (s Sync) getSourceAndDestinationObjects(ctx context.Context, cancel context
 		}
 
 		// read and print the external sort errors
-		go func() {
-			for err := range dstErrCh {
-				printError(s.fullCommand, s.op, err)
-			}
-		}()
+		go s.printSortErrors(dstErrCh)
 	}()
 
 	return sourceObjects, destObjects, nil
+}
+
+// printSortErrors prints the errors reported by the external sort. extsort
+// sends a nil error when the context is cancelled while merging, so nil is
+// skipped.
+func (s Sync) printSortErrors(errCh <-chan error) {
+	for err := range errCh {
+		if err != nil {
+			printError(s.fullCommand, s.op, err)
+		}
+	}
 }
 
 // planRun prepares the commands and writes them to writer 'w'.
