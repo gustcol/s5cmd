@@ -150,6 +150,26 @@ func TestDiskUsageWildcardS3ObjectsWithDashH(t *testing.T) {
 	})
 }
 
+func TestDiskUsageS3ObjectsBelowOneKilobyteWithDashH(t *testing.T) {
+	t.Parallel()
+
+	s3client, s5cmd := setup(t)
+
+	bucket := s3BucketFromTestName(t)
+	createBucket(t, s3client, bucket)
+
+	putFile(t, s3client, bucket, "testfile1.txt", "this is a small file")
+
+	cmd := s5cmd("du", "-H", "s3://"+bucket)
+	result := icmd.RunCmd(cmd)
+
+	result.Assert(t, icmd.Success)
+
+	assertLines(t, result.Stdout(), map[int]compareFunc{
+		0: suffix(`20B bytes in 1 objects: s3://%v`, bucket),
+	})
+}
+
 func TestDiskUsageMissingObject(t *testing.T) {
 	t.Parallel()
 

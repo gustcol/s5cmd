@@ -1576,7 +1576,13 @@ func TestSyncS3BucketToS3BucketWithDeleteStorageClass(t *testing.T) {
 
 	result := icmd.RunCmd(cmd)
 
-	result.Assert(t, icmd.Success)
+	// the source is empty, which sync reports as an error and exits with 1,
+	// but the objects in the destination are still deleted.
+	result.Assert(t, icmd.Expected{ExitCode: 1})
+
+	assertLines(t, result.Stderr(), map[int]compareFunc{
+		0: contains(`no object found`),
+	})
 
 	assertLines(t, result.Stdout(), map[int]compareFunc{
 		0: equals(`rm %vtestfile1.txt`, dst),
@@ -2454,6 +2460,245 @@ func TestSyncLocalDirectoryToS3WithExcludeFilter(t *testing.T) {
 	}
 }
 
+// sync --delete --exclude "sub/*" folder/ s3://bucket/prefix/
+func TestSyncLocalToS3BucketWithDeleteAndExcludeFilter(t *testing.T) {
+	t.Parallel()
+
+	s3client, s5cmd := setup(t)
+
+	bucket := s3BucketFromTestName(t)
+	createBucket(t, s3client, bucket)
+
+	folderLayout := []fs.PathOp{
+		fs.WithFile("readme.md", "S: this is a readme file"),
+	}
+
+	workdir := fs.NewDir(t, "somedir", folderLayout...)
+	defer workdir.Remove()
+
+	s3Content := map[string]string{
+		"prefix/sub/keep.txt": "D: this is a text file",
+		"prefix/old.log":      "D: this is a log file",
+	}
+
+	for filename, content := range s3Content {
+		putFile(t, s3client, bucket, filename, content)
+	}
+
+	// pattern is relative to the destination prefix.
+	const excludePattern = "sub/*"
+
+	src := fmt.Sprintf("%v/", workdir.Path())
+	src = filepath.ToSlash(src)
+	dst := fmt.Sprintf("s3://%v/prefix/", bucket)
+
+	cmd := s5cmd("sync", "--delete", "--exclude", excludePattern, src, dst)
+	result := icmd.RunCmd(cmd)
+
+	result.Assert(t, icmd.Success)
+
+	assertLines(t, result.Stdout(), map[int]compareFunc{
+		0: equals(`cp %vreadme.md %vreadme.md`, src, dst),
+		1: equals(`rm %vold.log`, dst),
+	}, sortInput(true))
+
+	// assert local filesystem
+	expected := fs.Expected(t, folderLayout...)
+	assert.Assert(t, fs.Equal(workdir.Path(), expected))
+
+	expectedS3Content := map[string]string{
+		"prefix/readme.md": "S: this is a readme file",
+		// excluded object exists only in destination and must not be deleted.
+		"prefix/sub/keep.txt": "D: this is a text file",
+	}
+
+	nonExpectedS3Content := map[string]string{
+		"prefix/old.log": "D: this is a log file",
+	}
+
+	// assert objects should be in S3
+	for key, content := range expectedS3Content {
+		assert.Assert(t, ensureS3Object(s3client, bucket, key, content))
+	}
+
+	// assert objects should not be in S3.
+	for key, content := range nonExpectedS3Content {
+		err := ensureS3Object(s3client, bucket, key, content)
+		assertError(t, err, errS3NoSuchKey)
+	}
+}
+
+// sync --delete --exclude "sub/*" s3://bucket/* folder/
+func TestSyncS3BucketToLocalWithDeleteAndExcludeFilter(t *testing.T) {
+	t.Parallel()
+
+	s3client, s5cmd := setup(t)
+
+	bucket := s3BucketFromTestName(t)
+	createBucket(t, s3client, bucket)
+
+	s3Content := map[string]string{
+		"readme.md": "S: this is a readme file",
+	}
+
+	for filename, content := range s3Content {
+		putFile(t, s3client, bucket, filename, content)
+	}
+
+	folderLayout := []fs.PathOp{
+		fs.WithFile("old.log", "D: this is a log file"),
+		fs.WithDir("sub",
+			fs.WithFile("keep.txt", "D: this is a text file"),
+		),
+	}
+
+	workdir := fs.NewDir(t, "somedir", folderLayout...)
+	defer workdir.Remove()
+
+	// pattern is relative to the destination directory.
+	const excludePattern = "sub/*"
+
+	src := fmt.Sprintf("s3://%v/", bucket)
+	dst := fmt.Sprintf("%v/", workdir.Path())
+	dst = filepath.ToSlash(dst)
+
+	cmd := s5cmd("sync", "--delete", "--exclude", excludePattern, src+"*", dst)
+	result := icmd.RunCmd(cmd)
+
+	result.Assert(t, icmd.Success)
+
+	assertLines(t, result.Stdout(), map[int]compareFunc{
+		0: equals(`cp %vreadme.md %vreadme.md`, src, dst),
+		1: equals(`rm %vold.log`, dst),
+	}, sortInput(true))
+
+	expectedFolderLayout := []fs.PathOp{
+		fs.WithFile("readme.md", "S: this is a readme file"),
+		// excluded file exists only in destination and must not be deleted.
+		fs.WithDir("sub",
+			fs.WithFile("keep.txt", "D: this is a text file"),
+		),
+	}
+
+	expected := fs.Expected(t, expectedFolderLayout...)
+	assert.Assert(t, fs.Equal(workdir.Path(), expected))
+
+	for key, content := range s3Content {
+		assert.Assert(t, ensureS3Object(s3client, bucket, key, content))
+	}
+}
+
+// sync --delete --include "*.md" --include "sub/*" folder/ s3://bucket/prefix/
+func TestSyncLocalToS3BucketWithDeleteAndIncludeFilter(t *testing.T) {
+	t.Parallel()
+
+	s3client, s5cmd := setup(t)
+
+	bucket := s3BucketFromTestName(t)
+	createBucket(t, s3client, bucket)
+
+	folderLayout := []fs.PathOp{
+		fs.WithFile("readme.md", "S: this is a readme file"),
+	}
+
+	workdir := fs.NewDir(t, "somedir", folderLayout...)
+	defer workdir.Remove()
+
+	s3Content := map[string]string{
+		"prefix/keep.txt":    "D: this is a text file",
+		"prefix/sub/old.log": "D: this is a log file",
+	}
+
+	for filename, content := range s3Content {
+		putFile(t, s3client, bucket, filename, content)
+	}
+
+	src := fmt.Sprintf("%v/", workdir.Path())
+	src = filepath.ToSlash(src)
+	dst := fmt.Sprintf("s3://%v/prefix/", bucket)
+
+	// patterns are relative to the destination prefix.
+	cmd := s5cmd("sync", "--delete", "--include", "*.md", "--include", "sub/*", src, dst)
+	result := icmd.RunCmd(cmd)
+
+	result.Assert(t, icmd.Success)
+
+	assertLines(t, result.Stdout(), map[int]compareFunc{
+		0: equals(`cp %vreadme.md %vreadme.md`, src, dst),
+		1: equals(`rm %vsub/old.log`, dst),
+	}, sortInput(true))
+
+	// assert local filesystem
+	expected := fs.Expected(t, folderLayout...)
+	assert.Assert(t, fs.Equal(workdir.Path(), expected))
+
+	expectedS3Content := map[string]string{
+		"prefix/readme.md": "S: this is a readme file",
+		// object not matching --include exists only in destination and must not be deleted.
+		"prefix/keep.txt": "D: this is a text file",
+	}
+
+	nonExpectedS3Content := map[string]string{
+		"prefix/sub/old.log": "D: this is a log file",
+	}
+
+	// assert objects should be in S3
+	for key, content := range expectedS3Content {
+		assert.Assert(t, ensureS3Object(s3client, bucket, key, content))
+	}
+
+	// assert objects should not be in S3.
+	for key, content := range nonExpectedS3Content {
+		err := ensureS3Object(s3client, bucket, key, content)
+		assertError(t, err, errS3NoSuchKey)
+	}
+}
+
+// sync --delete --include "*.md" --include "sub/*" s3://bucket/* folder/
+func TestSyncS3BucketToLocalWithDeleteAndIncludeFilter(t *testing.T) {
+	t.Parallel()
+
+	s3client, s5cmd := setup(t)
+
+	bucket := s3BucketFromTestName(t)
+	createBucket(t, s3client, bucket)
+
+	putFile(t, s3client, bucket, "readme.md", "S: this is a readme file")
+
+	folderLayout := []fs.PathOp{
+		fs.WithFile("keep.txt", "D: this is a text file"),
+		fs.WithDir("sub",
+			fs.WithFile("old.log", "D: this is a log file"),
+		),
+	}
+
+	workdir := fs.NewDir(t, "somedir", folderLayout...)
+	defer workdir.Remove()
+
+	src := fmt.Sprintf("s3://%v/", bucket)
+	dst := fmt.Sprintf("%v/", workdir.Path())
+	dst = filepath.ToSlash(dst)
+
+	// patterns are relative to the destination directory.
+	cmd := s5cmd("sync", "--delete", "--include", "*.md", "--include", "sub/*", src+"*", dst)
+	result := icmd.RunCmd(cmd)
+
+	result.Assert(t, icmd.Success)
+
+	assertLines(t, result.Stdout(), map[int]compareFunc{
+		0: equals(`cp %vreadme.md %vreadme.md`, src, dst),
+		1: equals(`rm %vsub/old.log`, dst),
+	}, sortInput(true))
+
+	// object not matching --include exists only in destination and must not be deleted.
+	expected := fs.Expected(t,
+		fs.WithFile("readme.md", "S: this is a readme file"),
+		fs.WithFile("keep.txt", "D: this is a text file"),
+		fs.WithDir("sub"),
+	)
+	assert.Assert(t, fs.Equal(workdir.Path(), expected))
+}
+
 // sync --delete somedir s3://bucket/ (removes 10k objects)
 func TestIssue435(t *testing.T) {
 	t.Parallel()
@@ -2637,6 +2882,89 @@ func TestSyncS3BucketToS3BucketThatDoesNotExist(t *testing.T) {
 	assertLines(t, result.Stderr(), map[int]compareFunc{
 		0: contains(`status code: 404`),
 	})
+}
+
+// sync s3://bucket/nonexistent folder/ (source object does not exist)
+func TestSyncS3ObjectThatDoesNotExistExitsWithError(t *testing.T) {
+	t.Parallel()
+
+	s3client, s5cmd := setup(t)
+
+	bucket := s3BucketFromTestName(t)
+	createBucket(t, s3client, bucket)
+
+	putFile(t, s3client, bucket, "other.txt", "S: this is another file")
+
+	workdir := fs.NewDir(t, "somedir")
+	defer workdir.Remove()
+
+	src := fmt.Sprintf("s3://%v/nonexistent.txt", bucket)
+	dst := fmt.Sprintf("%v/", filepath.ToSlash(workdir.Path()))
+
+	cmd := s5cmd("sync", src, dst)
+	result := icmd.RunCmd(cmd)
+
+	result.Assert(t, icmd.Expected{ExitCode: 1})
+
+	assertLines(t, result.Stderr(), map[int]compareFunc{
+		0: contains(`no object found`),
+	})
+
+	assert.Assert(t, fs.Equal(workdir.Path(), fs.Expected(t)))
+}
+
+// sync s3://bucket/nonexistent/* folder/ (nothing matches the wildcard)
+func TestSyncS3WildcardWithNoMatchExitsWithError(t *testing.T) {
+	t.Parallel()
+
+	s3client, s5cmd := setup(t)
+
+	bucket := s3BucketFromTestName(t)
+	createBucket(t, s3client, bucket)
+
+	workdir := fs.NewDir(t, "somedir")
+	defer workdir.Remove()
+
+	src := fmt.Sprintf("s3://%v/nonexistent/*", bucket)
+	dst := fmt.Sprintf("%v/", filepath.ToSlash(workdir.Path()))
+
+	cmd := s5cmd("sync", src, dst)
+	result := icmd.RunCmd(cmd)
+
+	result.Assert(t, icmd.Expected{ExitCode: 1})
+
+	assertLines(t, result.Stderr(), map[int]compareFunc{
+		0: contains(`no object found`),
+	})
+}
+
+// sync --source-region us-east-1 --destination-region us-east-1 s3://bucket/* s3://dstbucket/
+func TestSyncS3BucketToS3BucketWithRegionFlags(t *testing.T) {
+	t.Parallel()
+
+	s3client, s5cmd := setup(t)
+
+	srcbucket := s3BucketFromTestName(t)
+	dstbucket := s3BucketFromTestNameWithPrefix(t, "dst")
+
+	createBucket(t, s3client, srcbucket)
+	createBucket(t, s3client, dstbucket)
+
+	putFile(t, s3client, srcbucket, "readme.md", "S: this is a readme file")
+
+	src := fmt.Sprintf("s3://%v/", srcbucket)
+	dst := fmt.Sprintf("s3://%v/", dstbucket)
+
+	cmd := s5cmd("sync", "--source-region", "us-east-1", "--destination-region", "us-east-1", src+"*", dst)
+	result := icmd.RunCmd(cmd)
+
+	result.Assert(t, icmd.Success)
+
+	assertLines(t, result.Stdout(), map[int]compareFunc{
+		0: equals(`cp %vreadme.md %vreadme.md`, src, dst),
+	})
+
+	assert.Assert(t, ensureS3Object(s3client, dstbucket, "readme.md", "S: this is a readme file"))
 }
 
 // If source path contains a special file it should not be synced

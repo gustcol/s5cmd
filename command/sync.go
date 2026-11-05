@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -115,6 +116,29 @@ func NewSyncCommand() *cli.Command {
 	return cmd
 }
 
+// syncErrors collects the errors that sync reports while it lists and plans
+// the work, so that they are reflected in the exit status. Errors from the
+// generated cp and rm commands are collected separately by the run loop.
+type syncErrors struct {
+	mu   sync.Mutex
+	errs *multierror.Error
+}
+
+func (e *syncErrors) add(err error) {
+	if err == nil || errorpkg.IsCancelation(err) {
+		return
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.errs = multierror.Append(e.errs, err)
+}
+
+func (e *syncErrors) err() error {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.errs.ErrorOrNil()
+}
+
 type ObjectPair struct {
 	src, dst *storage.Object
 }
@@ -130,6 +154,12 @@ type Sync struct {
 	delete      bool
 	sizeOnly    bool
 	exitOnError bool
+	exclude     []string
+	include     []string
+
+	// patterns
+	excludePatterns []*regexp.Regexp
+	includePatterns []*regexp.Regexp
 
 	// s3 options
 	storageOpts storage.Options
@@ -140,6 +170,9 @@ type Sync struct {
 
 	srcRegion string
 	dstRegion string
+
+	// listErrs holds the errors printed while listing and planning.
+	listErrs *syncErrors
 }
 
 // NewSync creates Sync from cli.Context
@@ -154,6 +187,8 @@ func NewSync(c *cli.Context) Sync {
 		delete:      c.Bool("delete"),
 		sizeOnly:    c.Bool("size-only"),
 		exitOnError: c.Bool("exit-on-error"),
+		exclude:     c.StringSlice("exclude"),
+		include:     c.StringSlice("include"),
 
 		// flags
 		followSymlinks: !c.Bool("no-follow-symlinks"),
@@ -164,6 +199,24 @@ func NewSync(c *cli.Context) Sync {
 		dstRegion:   c.String("destination-region"),
 		storageOpts: NewStorageOpts(c),
 	}
+}
+
+// srcStorageOpts returns the storage options for talking to the source: the
+// common options, with the region set to --source-region when that flag is
+// set. It mirrors what cp does for the objects it copies.
+func (s Sync) srcStorageOpts() storage.Options {
+	opts := s.storageOpts
+	if s.srcRegion != "" {
+		opts.SetRegion(s.srcRegion)
+	}
+	return opts
+}
+
+// dstStorageOpts returns the storage options for talking to the destination.
+// Like Copy.dstStorageOpts, it starts from the source options and replaces
+// the region with --destination-region when that flag is set.
+func (s Sync) dstStorageOpts() storage.Options {
+	return Copy{storageOpts: s.srcStorageOpts(), dstRegion: s.dstRegion}.dstStorageOpts()
 }
 
 // Run compares files, plans necessary s5cmd commands to execute
@@ -179,6 +232,20 @@ func (s Sync) Run(c *cli.Context) error {
 		return err
 	}
 
+	s.excludePatterns, err = createRegexFromWildcard(s.exclude)
+	if err != nil {
+		printError(s.fullCommand, s.op, err)
+		return err
+	}
+
+	s.includePatterns, err = createRegexFromWildcard(s.include)
+	if err != nil {
+		printError(s.fullCommand, s.op, err)
+		return err
+	}
+
+	s.listErrs = &syncErrors{}
+
 	ctx, cancel := context.WithCancel(c.Context)
 	defer cancel()
 
@@ -190,7 +257,7 @@ func (s Sync) Run(c *cli.Context) error {
 
 	isBatch := srcurl.IsWildcard()
 	if !isBatch && !srcurl.IsRemote() {
-		sourceClient, err := storage.NewClient(ctx, srcurl, s.storageOpts)
+		sourceClient, err := storage.NewClient(ctx, srcurl, s.srcStorageOpts())
 		if err != nil {
 			return err
 		}
@@ -221,9 +288,9 @@ func (s Sync) Run(c *cli.Context) error {
 
 	err = NewRun(c, pipeReader).Run(ctx)
 	if n := atomic.LoadInt64(&rejected); n > 0 {
-		return multierror.Append(err, fmt.Errorf("%d object(s) were not synced", n)).ErrorOrNil()
+		err = multierror.Append(err, fmt.Errorf("%d object(s) were not synced", n))
 	}
-	return err
+	return multierror.Append(err, s.listErrs.err()).ErrorOrNil()
 }
 
 // compareObjects compares source and destination objects. It assumes that
@@ -289,12 +356,12 @@ func compareObjects(sourceObjects, destObjects chan *storage.Object, isSrcBatch 
 // given URLs. The returned channels gives objects sorted in ascending order
 // with respect to their url.Relative path. See also storage.Less.
 func (s Sync) getSourceAndDestinationObjects(ctx context.Context, cancel context.CancelFunc, srcurl, dsturl *url.URL) (chan *storage.Object, chan *storage.Object, error) {
-	sourceClient, err := storage.NewClient(ctx, srcurl, s.storageOpts)
+	sourceClient, err := storage.NewClient(ctx, srcurl, s.srcStorageOpts())
 	if err != nil {
 		return nil, nil, err
 	}
 
-	destClient, err := storage.NewClient(ctx, dsturl, s.storageOpts)
+	destClient, err := storage.NewClient(ctx, dsturl, s.dstStorageOpts())
 	if err != nil {
 		return nil, nil, err
 	}
@@ -343,6 +410,7 @@ func (s Sync) getSourceAndDestinationObjects(ctx context.Context, cancel context
 						Operation: s.op,
 					}
 					log.Error(msg)
+					s.listErrs.add(st.Err)
 					cancel()
 				}
 				if s.shouldSkipSrcObject(st, true) {
@@ -365,8 +433,10 @@ func (s Sync) getSourceAndDestinationObjects(ctx context.Context, cancel context
 			sourceObjects <- &o
 		}
 
-		// read and print the external sort errors
-		go s.printSortErrors(srcErrCh)
+		// read and print the external sort errors. The error channel is
+		// closed by the sorter before it closes the output channel, so
+		// this does not block once the loop above is done.
+		s.printSortErrors(srcErrCh)
 	}()
 
 	// get destination objects.
@@ -386,6 +456,7 @@ func (s Sync) getSourceAndDestinationObjects(ctx context.Context, cancel context
 						Operation: s.op,
 					}
 					log.Error(msg)
+					s.listErrs.add(dt.Err)
 					cancel()
 				}
 				if s.shouldSkipDstObject(dt, false) {
@@ -408,8 +479,10 @@ func (s Sync) getSourceAndDestinationObjects(ctx context.Context, cancel context
 			destObjects <- &o
 		}
 
-		// read and print the external sort errors
-		go s.printSortErrors(dstErrCh)
+		// read and print the external sort errors. The error channel is
+		// closed by the sorter before it closes the output channel, so
+		// this does not block once the loop above is done.
+		s.printSortErrors(dstErrCh)
 	}()
 
 	return sourceObjects, destObjects, nil
@@ -422,6 +495,7 @@ func (s Sync) printSortErrors(errCh <-chan error) {
 	for err := range errCh {
 		if err != nil {
 			printError(s.fullCommand, s.op, err)
+			s.listErrs.add(err)
 		}
 	}
 }
@@ -509,6 +583,15 @@ func (s Sync) planRun(
 			dstURLs := make([]*url.URL, 0, extsortChunkSize)
 
 			for d := range onlyDest {
+				// objects filtered out by --exclude/--include are not part
+				// of the sync, so they must not be deleted from the
+				// destination either.
+				if len(s.excludePatterns) > 0 && isURLMatched(s.excludePatterns, d.Path, dsturl.Prefix) {
+					continue
+				}
+				if len(s.includePatterns) > 0 && !isURLMatched(s.includePatterns, d.Path, dsturl.Prefix) {
+					continue
+				}
 				dstURLs = append(dstURLs, d)
 			}
 
@@ -516,7 +599,16 @@ func (s Sync) planRun(
 				return
 			}
 
-			command, err := generateCommand(c, "rm", defaultFlags, dstURLs...)
+			// --exclude and --include are already applied above, relative to
+			// the destination prefix. Omit them from the generated rm command,
+			// which would match them against the full object key instead.
+			rmFlags := map[string]interface{}{
+				"raw":     true,
+				"exclude": nil,
+				"include": nil,
+			}
+
+			command, err := generateCommand(c, "rm", rmFlags, dstURLs...)
 			if err != nil {
 				printDebug(s.op, err, dstURLs...)
 				return
@@ -561,6 +653,7 @@ func (s Sync) shouldSkipSrcObject(object *storage.Object, verbose bool) bool {
 	if err := object.Err; err != nil {
 		if verbose {
 			printError(s.fullCommand, s.op, err)
+			s.listErrs.add(err)
 		}
 		return true
 	}
