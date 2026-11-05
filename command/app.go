@@ -176,9 +176,30 @@ var app = &cli.App{
 	},
 }
 
+// maxConnPoolSize bounds the idle connection pool. Idle connections are closed
+// after a timeout, so a pool larger than what is needed costs little, but
+// numworkers can be set to very large values.
+const maxConnPoolSize = 2048
+
+// connPoolSize returns the number of idle connections worth keeping per host:
+// one per worker, times the multipart concurrency for commands that have it.
+func connPoolSize(numWorkers, concurrency int) int {
+	if concurrency < 1 {
+		concurrency = 1
+	}
+
+	size := parallel.WorkerCount(numWorkers) * concurrency
+	if size > maxConnPoolSize || size < 0 {
+		size = maxConnPoolSize
+	}
+
+	return size
+}
+
 // NewStorageOpts creates storage.Options object from the given context.
 func NewStorageOpts(c *cli.Context) storage.Options {
 	return storage.Options{
+		ConnPoolSize:           connPoolSize(c.Int("numworkers"), c.Int("concurrency")),
 		DryRun:                 c.Bool("dry-run"),
 		Endpoint:               c.String("endpoint-url"),
 		MaxRetries:             c.Int("retry-count"),

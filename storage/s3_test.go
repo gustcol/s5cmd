@@ -1414,3 +1414,30 @@ func TestS3ListDirMarker(t *testing.T) {
 		})
 	}
 }
+
+func TestNewHTTPClientConnPool(t *testing.T) {
+	if c := newHTTPClient(Options{}); c != nil {
+		t.Fatalf("expected the SDK default client, got %v", c)
+	}
+
+	c := newHTTPClient(Options{ConnPoolSize: 640})
+	tr, ok := c.Transport.(*http.Transport)
+	if !ok {
+		t.Fatalf("unexpected transport %T", c.Transport)
+	}
+	if tr.MaxIdleConnsPerHost != 640 || tr.MaxIdleConns != 640 {
+		t.Errorf("idle pool = %d/%d, want 640/640", tr.MaxIdleConns, tr.MaxIdleConnsPerHost)
+	}
+	if tr.Proxy == nil {
+		t.Error("proxy from environment must stay enabled")
+	}
+	if tr.TLSClientConfig != nil && tr.TLSClientConfig.InsecureSkipVerify {
+		t.Error("TLS verification must stay on")
+	}
+
+	insecure := newHTTPClient(Options{NoVerifySSL: true, ConnPoolSize: 8})
+	tr = insecure.Transport.(*http.Transport)
+	if !tr.TLSClientConfig.InsecureSkipVerify || tr.MaxIdleConnsPerHost != 8 {
+		t.Errorf("insecure client misconfigured: %+v", tr)
+	}
+}

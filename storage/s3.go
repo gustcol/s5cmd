@@ -1269,10 +1269,7 @@ func (sc *SessionCache) newSession(ctx context.Context, opts Options) (*session.
 		endpointURL = sentinelURL
 	}
 
-	var httpClient *http.Client
-	if opts.NoVerifySSL {
-		httpClient = insecureHTTPClient
-	}
+	httpClient := newHTTPClient(opts)
 	awsCfg = awsCfg.
 		WithEndpoint(endpointURL.String()).
 		WithS3ForcePathStyle(!isVirtualHostStyle).
@@ -1411,11 +1408,40 @@ func (c *customRetryer) ShouldRetry(req *request.Request) bool {
 	return shouldRetry
 }
 
-var insecureHTTPClient = &http.Client{
-	Transport: &http.Transport{
-		TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
-		Proxy:           http.ProxyFromEnvironment,
-	},
+// newHTTPClient returns the HTTP client used by the AWS session. It returns
+// nil, which makes the SDK use http.DefaultClient, when no customization is
+// needed.
+//
+// Go keeps only 2 idle connections per host by default. With hundreds of
+// workers that means most requests open a new TCP and TLS connection, so the
+// idle pool is sized to the expected number of concurrent requests.
+func newHTTPClient(opts Options) *http.Client {
+	if opts.ConnPoolSize <= 0 && !opts.NoVerifySSL {
+		return nil
+	}
+
+	var transport *http.Transport
+	if base, ok := http.DefaultTransport.(*http.Transport); ok && !opts.NoVerifySSL {
+		transport = base.Clone()
+	} else {
+		transport = &http.Transport{
+			Proxy:                 http.ProxyFromEnvironment,
+			TLSHandshakeTimeout:   10 * time.Second,
+			IdleConnTimeout:       90 * time.Second,
+			ExpectContinueTimeout: 1 * time.Second,
+		}
+	}
+
+	if opts.NoVerifySSL {
+		transport.TLSClientConfig = &tls.Config{InsecureSkipVerify: true}
+	}
+
+	if opts.ConnPoolSize > 0 {
+		transport.MaxIdleConns = opts.ConnPoolSize
+		transport.MaxIdleConnsPerHost = opts.ConnPoolSize
+	}
+
+	return &http.Client{Transport: transport}
 }
 
 func supportsTransferAcceleration(endpoint urlpkg.URL) bool {
