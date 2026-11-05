@@ -184,6 +184,20 @@ func TestTransportFlag(t *testing.T) {
 		})
 	}
 
+	t.Run("http2 with several connections and AWS_CA_BUNDLE", func(t *testing.T) {
+		dir := fs.NewDir(t, t.Name())
+		cmd := s5cmd(dir.Path(), f.url)("--retry-count", "0", "--transport", "http2", "--transport-conns", "3", "ls", "s3://bucket")
+		cmd.Env = append(cmd.Env, "AWS_CA_BUNDLE="+f.caFile)
+		icmd.RunCmd(cmd).Assert(t, icmd.Success)
+	})
+
+	t.Run("transport-conns from the environment", func(t *testing.T) {
+		dir := fs.NewDir(t, t.Name())
+		cmd := s5cmd(dir.Path(), f.url)("--retry-count", "0", "--ca-cert", f.caFile, "--transport", "http2", "ls", "s3://bucket")
+		cmd.Env = append(cmd.Env, "S5CMD_TRANSPORT_CONNS=2")
+		icmd.RunCmd(cmd).Assert(t, icmd.Success)
+	})
+
 	t.Run("http3 needs a build with support", func(t *testing.T) {
 		res := tlsS5cmd(t, f, "--ca-cert", f.caFile, "--transport", "http3", "ls", "s3://bucket")
 		res.Assert(t, icmd.Expected{ExitCode: 1, Err: "HTTP/3"})

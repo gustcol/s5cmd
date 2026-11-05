@@ -191,9 +191,27 @@ S5CMD_TRANSPORT=http2 s5cmd cp 's3://bucket/*' .
 - `--transport auto|http1|http2|http3` (env `S5CMD_TRANSPORT`):
   - `auto` (default): same as before, the TLS handshake (ALPN) picks HTTP/2 or HTTP/1.1.
   - `http1`: HTTP/1.1 only. Parallelism comes from many TCP connections, sized by `--numworkers` x `--concurrency`.
-  - `http2`: HTTP/2 only. The request fails if the server does not negotiate `h2`.
+  - `http2`: HTTP/2 only. The request fails if the server does not negotiate `h2`. Requests are spread over `--transport-conns` connections (see below).
   - `http3`: only in builds made with `-tags http3`. The default build prints `this build has no HTTP/3 support`.
   - The negotiated protocol (`HTTP/1.1` or `HTTP/2.0`) is logged once per protocol: with `--log debug` when `--transport` is set explicitly, and with `--log trace` for `auto`.
+
+#### `--transport-conns` and HTTP/2 throughput
+
+Go sends all requests to one host over a single HTTP/2 connection, so a bulk copy is limited by what one TCP stream and one core can do, however many workers you run. `--transport http2` therefore opens `--transport-conns N` independent connections (env `S5CMD_TRANSPORT_CONNS`, default 8) and uses them round-robin. Each one has its own TLS state, flow-control windows and idle pool, and all share the same TLS settings.
+
+`--transport-conns` is ignored (with a debug message) for `auto` and `http1`. With `--transport-conns 1`, HTTP/2 uses one connection as Go does by default. With `AWS_CA_BUNDLE` and the `AWS_SDK_GO_CLIENT_TLS_*` variables it works like the other modes, but `ca_bundle` in the shared AWS config file is not read when N is greater than 1; use `--ca-cert`.
+
+One measurement, 4 GiB over a 40 Gbit LAN with a TLS reverse proxy in front of the S3 server (single runs, treat differences under 15% as noise):
+
+| Connections | Download | Upload |
+|---|---|---|
+| HTTP/2, 1 | 6.9 s | 14.9 s |
+| HTTP/2, 4 | 2.4 s | 4.7 s |
+| HTTP/2, 8 | 2.0 s | 3.5 s |
+| HTTP/2, 16 | 1.7 s | 2.8 s |
+| HTTP/1.1 | 1.2 s | 2.4 s |
+
+HTTP/1.1 is still the fastest here. HTTP/2 helps when the server or a proxy only offers h2, or when new connections are expensive.
 
 ### Region detection
 

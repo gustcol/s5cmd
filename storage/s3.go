@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
+	"crypto/tls"
 	"encoding/csv"
 	"encoding/json"
 	"errors"
@@ -1271,9 +1272,20 @@ func (sc *SessionCache) newSession(ctx context.Context, opts Options) (*session.
 		endpointURL = sentinelURL
 	}
 
+	var wrapped *http.Client
 	httpClient, err := newHTTPClient(opts)
 	if err != nil {
 		return nil, err
+	}
+	// A client that spreads requests over several transports is not a plain
+	// *http.Transport, which the SDK needs for its own TLS handling. It is
+	// set on the session after creation instead.
+	plainTransport := true
+	if httpClient != nil {
+		_, plainTransport = httpClient.Transport.(*http.Transport)
+	}
+	if !plainTransport {
+		httpClient, wrapped = nil, httpClient
 	}
 	awsCfg = awsCfg.
 		WithEndpoint(endpointURL.String()).
@@ -1310,7 +1322,7 @@ func (sc *SessionCache) newSession(ctx context.Context, opts Options) (*session.
 		Config:            *awsCfg,
 		SharedConfigState: useSharedConfig,
 	}
-	if opts.CACert != "" {
+	if opts.CACert != "" && plainTransport {
 		// The SDK replaces the root CAs of our transport with AWS_CA_BUNDLE
 		// (or ca_bundle from the shared config) when it is set. Handing it the
 		// same file keeps --ca-cert in charge.
@@ -1324,6 +1336,9 @@ func (sc *SessionCache) newSession(ctx context.Context, opts Options) (*session.
 	sess, err := session.NewSessionWithOptions(sessOpts)
 	if err != nil {
 		return nil, err
+	}
+	if wrapped != nil {
+		sess.Config.HTTPClient = wrapped
 	}
 	sess.Handlers.Complete.PushBack(protocolLogger(opts))
 
@@ -1451,12 +1466,41 @@ func newHTTPClient(opts Options) (*http.Client, error) {
 		return &http.Client{Transport: rt}, nil
 	}
 
+	conns := transportConns(opts)
+	if conns > 1 {
+		// The SDK cannot apply AWS_CA_BUNDLE to a wrapped transport, so
+		// the variables it reads are honored here.
+		opts = withEnvTLS(opts)
+		tlsCfg, err = tlsConfig(opts)
+		if err != nil {
+			return nil, err
+		}
+	}
+
 	custom := tlsCfg != nil || opts.ConnPoolSize > 0 ||
 		opts.Transport == TransportHTTP1 || opts.Transport == TransportHTTP2
 	if !custom {
 		return nil, nil
 	}
 
+	if opts.Transport == TransportHTTP2 {
+		tlsCfg = requireH2(tlsCfg)
+	}
+
+	if conns > 1 {
+		rr := &roundRobinTransport{}
+		for i := 0; i < conns; i++ {
+			rr.transports = append(rr.transports, newTransport(opts, tlsCfg))
+		}
+		return &http.Client{Transport: rr}, nil
+	}
+
+	return &http.Client{Transport: newTransport(opts, tlsCfg)}, nil
+}
+
+// newTransport returns a transport based on the default one, with the TLS
+// config, the protocols and the idle pool of opts.
+func newTransport(opts Options, tlsCfg *tls.Config) *http.Transport {
 	var transport *http.Transport
 	if base, ok := http.DefaultTransport.(*http.Transport); ok {
 		// keep the dial timeout, keep-alive and HTTP/2 settings of the
@@ -1471,9 +1515,6 @@ func newHTTPClient(opts Options) (*http.Client, error) {
 		}
 	}
 
-	if opts.Transport == TransportHTTP2 {
-		tlsCfg = requireH2(tlsCfg)
-	}
 	if tlsCfg != nil {
 		transport.TLSClientConfig = tlsCfg
 	}
@@ -1485,7 +1526,7 @@ func newHTTPClient(opts Options) (*http.Client, error) {
 		transport.MaxIdleConnsPerHost = opts.ConnPoolSize
 	}
 
-	return &http.Client{Transport: transport}, nil
+	return transport
 }
 
 func supportsTransferAcceleration(endpoint urlpkg.URL) bool {

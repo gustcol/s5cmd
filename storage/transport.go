@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"sync"
+	"sync/atomic"
 
 	"github.com/aws/aws-sdk-go/aws/request"
 
@@ -48,6 +49,9 @@ func tlsConfig(opts Options) (*tls.Config, error) {
 	}
 	if opts.ClientCert != "" && opts.ClientKey == "" {
 		return nil, errors.New("--client-cert requires --client-key")
+	}
+	if opts.TransportConns < 0 {
+		return nil, errors.New("--transport-conns must not be negative")
 	}
 	if opts.CACert == "" && opts.ClientCert == "" && !opts.NoVerifySSL {
 		return nil, nil
@@ -157,5 +161,64 @@ func protocolLogger(opts Options) func(r *request.Request) {
 		} else {
 			log.Trace(log.TraceMessage{Message: msg})
 		}
+	}
+}
+
+// defaultH2Conns is the number of connections used for --transport http2 when
+// --transport-conns is not given. Go sends every request to a host over one
+// HTTP/2 connection, which caps the throughput of bulk copies at what a single
+// TCP stream and its flow-control window can do.
+const defaultH2Conns = 8
+
+// transportConns returns how many independent transports newHTTPClient builds.
+func transportConns(opts Options) int {
+	if opts.Transport != TransportHTTP2 {
+		if opts.TransportConns > 0 && opts.LogLevel <= log.LevelDebug {
+			log.Debug(log.DebugMessage{Err: fmt.Sprintf("--transport-conns is ignored with --transport %s", transportName(opts.Transport))})
+		}
+		return 1
+	}
+	if opts.TransportConns > 0 {
+		return opts.TransportConns
+	}
+	return defaultH2Conns
+}
+
+func transportName(mode string) string {
+	if mode == "" {
+		return TransportAuto
+	}
+	return mode
+}
+
+// withEnvTLS fills in the CA bundle and the client certificate from the
+// variables the AWS SDK reads, when the flags are not given.
+func withEnvTLS(opts Options) Options {
+	if opts.CACert == "" {
+		opts.CACert = os.Getenv("AWS_CA_BUNDLE")
+	}
+	if opts.ClientCert == "" && opts.ClientKey == "" {
+		opts.ClientCert = os.Getenv("AWS_SDK_GO_CLIENT_TLS_CERT")
+		opts.ClientKey = os.Getenv("AWS_SDK_GO_CLIENT_TLS_KEY")
+	}
+	return opts
+}
+
+// roundRobinTransport spreads requests over several independent transports.
+// Each one has its own connection pool, so with HTTP/2 each opens its own
+// connection and has its own flow-control windows.
+type roundRobinTransport struct {
+	transports []*http.Transport
+	next       atomic.Uint64
+}
+
+func (r *roundRobinTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	i := (r.next.Add(1) - 1) % uint64(len(r.transports))
+	return r.transports[i].RoundTrip(req)
+}
+
+func (r *roundRobinTransport) CloseIdleConnections() {
+	for _, t := range r.transports {
+		t.CloseIdleConnections()
 	}
 }

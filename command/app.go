@@ -71,6 +71,11 @@ var app = &cli.App{
 			EnvVars: []string{"S5CMD_TRANSPORT"},
 			Usage:   "HTTP protocol: (auto, http1, http2, http3)",
 		},
+		&cli.IntFlag{
+			Name:    "transport-conns",
+			EnvVars: []string{"S5CMD_TRANSPORT_CONNS"},
+			Usage:   "number of independent HTTP/2 connections that requests are spread over (default 8, only used with --transport http2)",
+		},
 		&cli.GenericFlag{
 			Name: "log",
 			Value: &EnumValue{
@@ -230,6 +235,7 @@ func NewStorageOpts(c *cli.Context) storage.Options {
 		ClientCert:             c.String("client-cert"),
 		ClientKey:              c.String("client-key"),
 		Transport:              c.String("transport"),
+		TransportConns:         c.Int("transport-conns"),
 		RequestPayer:           c.String("request-payer"),
 		UseListObjectsV1:       c.Bool("use-list-objects-v1"),
 		Profile:                c.String("profile"),

@@ -3,7 +3,7 @@
 
 #### Features
 - New TLS options `--ca-cert`, `--client-cert` and `--client-key` for private CAs and mutual TLS. The CA file replaces the system roots (like `AWS_CA_BUNDLE` and `curl --cacert`) and wins over `AWS_CA_BUNDLE`. `--client-cert` and `--client-key` must be given together. `--no-verify-ssl` works as before.
-- New `--transport auto|http1|http2|http3` option (env `S5CMD_TRANSPORT`, default `auto`). `auto` keeps the current behavior, `http1` and `http2` restrict the protocol, and `http2` fails when the server does not negotiate h2. The negotiated protocol is logged at debug level (trace level for `auto`, so existing debug output stays the same). `http3` is reserved for builds with the `http3` tag and fails in the default build.
+- New `--transport auto|http1|http2|http3` option (env `S5CMD_TRANSPORT`, default `auto`). `auto` keeps the current behavior, `http1` and `http2` restrict the protocol, and `http2` fails when the server does not negotiate h2. The negotiated protocol is logged at debug level (trace level for `auto`, so existing debug output stays the same). `http2` spreads requests over `--transport-conns N` independent connections (env `S5CMD_TRANSPORT_CONNS`, default 8), because Go otherwise uses one connection and gets about a quarter of the HTTP/1.1 throughput. `http3` is reserved for builds with the `http3` tag and fails in the default build.
 
 ## v2.4.0 - 2026-11-06
 

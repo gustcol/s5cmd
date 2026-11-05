@@ -74,6 +74,7 @@ func NewRemoteClient(ctx context.Context, url *url.URL, opts Options) (*S3, erro
 		ClientCert:             opts.ClientCert,
 		ClientKey:              opts.ClientKey,
 		Transport:              opts.Transport,
+		TransportConns:         opts.TransportConns,
 		bucket:                 url.Bucket,
 		region:                 opts.region,
 	}
@@ -104,6 +105,7 @@ type Options struct {
 	CACert                 string // PEM file with the CA certificates to trust
 	ClientCert             string // PEM client certificate for mutual TLS
 	ClientKey              string // PEM private key of ClientCert
+	TransportConns         int    // independent connections for http2; 0 means the default
 	Transport              string // auto, http1, http2 or http3; empty means auto
 	bucket                 string
 	region                 string
