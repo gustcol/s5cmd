@@ -1,9 +1,9 @@
 package storage
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
-	"crypto/tls"
 	"encoding/csv"
 	"encoding/json"
 	"errors"
@@ -1271,7 +1271,10 @@ func (sc *SessionCache) newSession(ctx context.Context, opts Options) (*session.
 		endpointURL = sentinelURL
 	}
 
-	httpClient := newHTTPClient(opts)
+	httpClient, err := newHTTPClient(opts)
+	if err != nil {
+		return nil, err
+	}
 	awsCfg = awsCfg.
 		WithEndpoint(endpointURL.String()).
 		WithS3ForcePathStyle(!isVirtualHostStyle).
@@ -1303,15 +1306,26 @@ func (sc *SessionCache) newSession(ctx context.Context, opts Options) (*session.
 		}
 	}
 
-	sess, err := session.NewSessionWithOptions(
-		session.Options{
-			Config:            *awsCfg,
-			SharedConfigState: useSharedConfig,
-		},
-	)
+	sessOpts := session.Options{
+		Config:            *awsCfg,
+		SharedConfigState: useSharedConfig,
+	}
+	if opts.CACert != "" {
+		// The SDK replaces the root CAs of our transport with AWS_CA_BUNDLE
+		// (or ca_bundle from the shared config) when it is set. Handing it the
+		// same file keeps --ca-cert in charge.
+		pem, err := os.ReadFile(opts.CACert)
+		if err != nil {
+			return nil, fmt.Errorf("cannot read CA certificate file: %w", err)
+		}
+		sessOpts.CustomCABundle = bytes.NewReader(pem)
+	}
+
+	sess, err := session.NewSessionWithOptions(sessOpts)
 	if err != nil {
 		return nil, err
 	}
+	sess.Handlers.Complete.PushBack(protocolLogger(opts))
 
 	// get region of the bucket and create session accordingly. if the region
 	// is not provided, it means we want region-independent session
@@ -1417,9 +1431,30 @@ func (c *customRetryer) ShouldRetry(req *request.Request) bool {
 // Go keeps only 2 idle connections per host by default. With hundreds of
 // workers that means most requests open a new TCP and TLS connection, so the
 // idle pool is sized to the expected number of concurrent requests.
-func newHTTPClient(opts Options) *http.Client {
-	if opts.ConnPoolSize <= 0 && !opts.NoVerifySSL {
-		return nil
+//
+// TLS options (CA file, client certificate) and the transport mode are applied
+// on the same transport, so the pool and the timeouts are kept.
+func newHTTPClient(opts Options) (*http.Client, error) {
+	if err := validTransport(opts.Transport); err != nil {
+		return nil, err
+	}
+	tlsCfg, err := tlsConfig(opts)
+	if err != nil {
+		return nil, err
+	}
+
+	if opts.Transport == TransportHTTP3 {
+		rt, err := newHTTP3RoundTripper(tlsCfg, opts)
+		if err != nil {
+			return nil, err
+		}
+		return &http.Client{Transport: rt}, nil
+	}
+
+	custom := tlsCfg != nil || opts.ConnPoolSize > 0 ||
+		opts.Transport == TransportHTTP1 || opts.Transport == TransportHTTP2
+	if !custom {
+		return nil, nil
 	}
 
 	var transport *http.Transport
@@ -1436,19 +1471,21 @@ func newHTTPClient(opts Options) *http.Client {
 		}
 	}
 
-	if opts.NoVerifySSL {
-		if transport.TLSClientConfig == nil {
-			transport.TLSClientConfig = &tls.Config{}
-		}
-		transport.TLSClientConfig.InsecureSkipVerify = true
+	if opts.Transport == TransportHTTP2 {
+		tlsCfg = requireH2(tlsCfg)
 	}
+	if tlsCfg != nil {
+		transport.TLSClientConfig = tlsCfg
+	}
+
+	setProtocols(transport, opts.Transport)
 
 	if opts.ConnPoolSize > 0 {
 		transport.MaxIdleConns = opts.ConnPoolSize
 		transport.MaxIdleConnsPerHost = opts.ConnPoolSize
 	}
 
-	return &http.Client{Transport: transport}
+	return &http.Client{Transport: transport}, nil
 }
 
 func supportsTransferAcceleration(endpoint urlpkg.URL) bool {

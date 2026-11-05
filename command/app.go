@@ -50,6 +50,27 @@ var app = &cli.App{
 			Name:  "no-verify-ssl",
 			Usage: "disable SSL certificate verification",
 		},
+		&cli.StringFlag{
+			Name:  "ca-cert",
+			Usage: "PEM file with the CA certificates to trust instead of the system ones",
+		},
+		&cli.StringFlag{
+			Name:  "client-cert",
+			Usage: "PEM client certificate for mutual TLS (requires --client-key)",
+		},
+		&cli.StringFlag{
+			Name:  "client-key",
+			Usage: "PEM private key of the client certificate (requires --client-cert)",
+		},
+		&cli.GenericFlag{
+			Name: "transport",
+			Value: &EnumValue{
+				Enum:    storage.TransportModes,
+				Default: storage.TransportAuto,
+			},
+			EnvVars: []string{"S5CMD_TRANSPORT"},
+			Usage:   "HTTP protocol: (auto, http1, http2, http3)",
+		},
 		&cli.GenericFlag{
 			Name: "log",
 			Value: &EnumValue{
@@ -205,6 +226,10 @@ func NewStorageOpts(c *cli.Context) storage.Options {
 		MaxRetries:             c.Int("retry-count"),
 		NoSignRequest:          c.Bool("no-sign-request"),
 		NoVerifySSL:            c.Bool("no-verify-ssl"),
+		CACert:                 c.String("ca-cert"),
+		ClientCert:             c.String("client-cert"),
+		ClientKey:              c.String("client-key"),
+		Transport:              c.String("transport"),
 		RequestPayer:           c.String("request-payer"),
 		UseListObjectsV1:       c.Bool("use-list-objects-v1"),
 		Profile:                c.String("profile"),

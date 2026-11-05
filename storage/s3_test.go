@@ -1646,11 +1646,11 @@ func TestS3ListDirMarker(t *testing.T) {
 }
 
 func TestNewHTTPClientConnPool(t *testing.T) {
-	if c := newHTTPClient(Options{}); c != nil {
+	if c, _ := newHTTPClient(Options{}); c != nil {
 		t.Fatalf("expected the SDK default client, got %v", c)
 	}
 
-	c := newHTTPClient(Options{ConnPoolSize: 640})
+	c, _ := newHTTPClient(Options{ConnPoolSize: 640})
 	tr, ok := c.Transport.(*http.Transport)
 	if !ok {
 		t.Fatalf("unexpected transport %T", c.Transport)
@@ -1665,7 +1665,7 @@ func TestNewHTTPClientConnPool(t *testing.T) {
 		t.Error("TLS verification must stay on")
 	}
 
-	insecure := newHTTPClient(Options{NoVerifySSL: true, ConnPoolSize: 8})
+	insecure, _ := newHTTPClient(Options{NoVerifySSL: true, ConnPoolSize: 8})
 	tr = insecure.Transport.(*http.Transport)
 	if !tr.TLSClientConfig.InsecureSkipVerify || tr.MaxIdleConnsPerHost != 8 {
 		t.Errorf("insecure client misconfigured: %+v", tr)

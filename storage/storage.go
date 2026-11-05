@@ -70,6 +70,10 @@ func NewRemoteClient(ctx context.Context, url *url.URL, opts Options) (*S3, erro
 		CredentialFile:         opts.CredentialFile,
 		LogLevel:               opts.LogLevel,
 		ConnPoolSize:           opts.ConnPoolSize,
+		CACert:                 opts.CACert,
+		ClientCert:             opts.ClientCert,
+		ClientKey:              opts.ClientKey,
+		Transport:              opts.Transport,
 		bucket:                 url.Bucket,
 		region:                 opts.region,
 	}
@@ -96,7 +100,11 @@ type Options struct {
 	RequestPayer           string
 	Profile                string
 	CredentialFile         string
-	ConnPoolSize           int // idle connections per host, 0 keeps the Go default
+	ConnPoolSize           int    // idle connections per host, 0 keeps the Go default
+	CACert                 string // PEM file with the CA certificates to trust
+	ClientCert             string // PEM client certificate for mutual TLS
+	ClientKey              string // PEM private key of ClientCert
+	Transport              string // auto, http1, http2 or http3; empty means auto
 	bucket                 string
 	region                 string
 }
