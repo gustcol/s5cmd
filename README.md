@@ -12,41 +12,33 @@ flags) and ships fixes for the bugs that hurt in production.
 Every change is tested with the unit and end-to-end suites and also against a real MinIO server
 over the network, comparing the behavior with upstream v2.3.0.
 
-### Already on `master`
+### What's new in v2.4.0
+
+Breaking changes first, then the rest. See [CHANGELOG.md](./CHANGELOG.md) for every item with
+credits.
 
 | Issue | What was wrong | What changed |
 |---|---|---|
 | [#851](https://github.com/peak/s5cmd/issues/851) | `--log debug` and `--log trace` printed to stdout, mixed with the command output, which broke scripts and `--json` pipelines. | DEBUG and TRACE messages go to stderr. Results stay on stdout. **Breaking change** if a script parsed DEBUG lines from stdout. |
-| [#834](https://github.com/peak/s5cmd/issues/834) | Objects whose key ends with `/` (directory markers) could not be deleted, and `rm 's3://bucket/path/*'` skipped them silently. | `rm` deletes them, with `--raw` or with a wildcard. Plain prefixes are still never deleted. `--raw --all-versions` on such a key is rejected with a clear error. |
-| [#839](https://github.com/peak/s5cmd/issues/839) | `cp --no-clobber` checked the destination in the source region, ignoring `--destination-region`. | The existence check uses the destination region, like the copy itself. |
-| [#615](https://github.com/peak/s5cmd/issues/615) | Ctrl+C made `s5cmd` exit with a normal error code, so a shell loop such as `while true; do s5cmd ...; done` kept running. | After cleanup, `s5cmd` terminates itself with the same signal (SIGINT or SIGTERM), so shells and supervisors see it was interrupted. On Windows it exits with code 130. |
-| [#835](https://github.com/peak/s5cmd/issues/835) | `sync` did not compile against newer `lanrat/extsort` releases. | The sort output channels are receive-only. No behavior change. |
+| [#869](https://github.com/peak/s5cmd/issues/869) | `sync` printed listing errors (wrong name, empty wildcard, access denied) and still exited with 0. | `sync` exits with 1 when listing or planning fails. **Breaking change** for scripts that relied on exit 0. |
+| [#817](https://github.com/peak/s5cmd/issues/817) | `--humanize` printed sizes below 1K without a unit. | They get a `B` suffix (`123B`). **Breaking change** for scripts that parse the number. |
+| [#872](https://github.com/peak/s5cmd/issues/872) | An object key like `data/../../evil` was written outside the local destination by `cp`, `mv` and `sync`. | Such keys are refused with an error, the rest are still processed, and the command exits non-zero. |
+| [#815](https://github.com/peak/s5cmd/issues/815) | `sync --delete` deleted destination objects excluded by `--exclude` or not matched by `--include`. | Filtered-out objects are left alone. |
+| [#816](https://github.com/peak/s5cmd/issues/816) | `sync` ignored `--source-region` and `--destination-region` when listing. | The listing uses them. |
+| [#834](https://github.com/peak/s5cmd/issues/834) | Objects whose key ends with `/` (directory markers) could not be deleted, and `rm 's3://bucket/path/*'` skipped them silently. | `rm` deletes them, with `--raw` or with a wildcard. Plain prefixes are still never deleted. |
+| [#839](https://github.com/peak/s5cmd/issues/839) | `cp --no-clobber` checked the destination in the source region. | The check uses the destination region. |
+| [#615](https://github.com/peak/s5cmd/issues/615) | Ctrl+C made `s5cmd` exit with a normal error code, so `while true; do s5cmd ...; done` kept running. | After cleanup, `s5cmd` terminates itself with the same signal. On Windows it exits with 130. |
+| [#835](https://github.com/peak/s5cmd/issues/835) | `sync` did not compile against newer `lanrat/extsort` releases. | The sort output channels are receive-only. |
 
-### Coming in v2.4.0 (in progress)
+Also in this release:
 
-Work in progress, listed here so users know what to expect. Each item lands on `master` only
-after review and tests.
-
-- **Security:** refuse object keys that would be written outside the local destination
-  (path traversal on download, [#872](https://github.com/peak/s5cmd/issues/872)).
-- **Data safety:** `sync --delete` must never delete files excluded by `--exclude` or not matched
-  by `--include` ([#815](https://github.com/peak/s5cmd/issues/815)).
-- **Correct exit codes:** `sync` exits non-zero when a transfer fails
-  ([#869](https://github.com/peak/s5cmd/issues/869)).
-- **Regions:** `sync` honors `--source-region` and `--destination-region`
-  ([#816](https://github.com/peak/s5cmd/issues/816)).
-- **Stability:** data race fixes in the progress bar and statistics, no more `os.Exit` or `panic`
-  inside `cp` and `sync`, nil pointer guards, a safe file handle in dry-run mode.
-- **Parallelism:** review of the worker pool and of multipart transfers: bounded queues on huge
-  listings, prompt and clean shutdown of all workers on cancel, an HTTP connection pool sized to
-  the configured parallelism, and documented memory limits. A benchmark covering `--numworkers`
-  and `--concurrency` for many small files and a few large ones.
-- **Toolchain:** a supported Go release, updated dependencies, a vulnerability scan, and CI on
-  Linux, macOS and Windows.
-- **Releases:** binaries for Linux, macOS and Windows on this repository's
-  [Releases](https://github.com/gustcol/s5cmd/releases) page.
-- Smaller fixes: a `B` suffix on human-readable sizes below 1 KiB
-  ([#817](https://github.com/peak/s5cmd/issues/817)).
+- **Stability:** data race fixes in the progress bar, statistics and log, no `os.Exit` from
+  workers in `cp` and `sync`, nil pointer guards, a safe file handle in dry-run mode, and worker
+  panics reported as errors.
+- **Parallelism:** queued tasks stop on cancel, the open file limit is raised to the hard limit,
+  the HTTP connection pool follows `--numworkers` x `--concurrency`, and `benchmark/` has a
+  matrix script.
+- **Toolchain:** Go 1.26 or newer, updated dependencies, CI on Linux, macOS and Windows.
 
 See [CHANGELOG.md](./CHANGELOG.md) for details per release.
 
@@ -97,13 +89,12 @@ storage services and local filesystems.
 
 ### Binaries
 
-Pre-built binaries for Linux, macOS and Windows will be on this fork's
-[Releases](https://github.com/gustcol/s5cmd/releases) page starting with v2.4.0. Until then,
-build from source.
+Pre-built binaries for Linux, macOS and Windows are on this fork's
+[Releases](https://github.com/gustcol/s5cmd/releases) page from v2.4.0 on.
 
 ### Build from source
 
-You need a recent [Go](https://go.dev/dl/) toolchain and `make`.
+You need [Go](https://go.dev/dl/) 1.26 or newer and `make`.
 
     git clone https://github.com/gustcol/s5cmd
     cd s5cmd

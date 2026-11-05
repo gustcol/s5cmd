@@ -1,8 +1,46 @@
 # Changelog
-## Unreleased
+## v2.4.0 - 2026-11-05
+
+This is the first release of the maintained fork at github.com/gustcol/s5cmd. Building from source needs Go 1.26 or newer.
 
 #### Breaking changes
 - `DEBUG` and `TRACE` log messages are now written to stderr instead of stdout, so they no longer mix with command output. ([#851](https://github.com/peak/s5cmd/issues/851))
+- `sync` now exits with 1 when listing or planning fails (wrong object name, empty wildcard, access denied, sort failure). It used to print the error and exit with 0. Syncing from an empty source with `--delete` still deletes the destination objects, but now exits with 1 because of the "no object found" error. ([#869](https://github.com/peak/s5cmd/issues/869))
+- `ls --humanize` and `du --humanize` print a `B` suffix for sizes below 1K (`123B` instead of `123`). ([#817](https://github.com/peak/s5cmd/issues/817)) ([#884](https://github.com/peak/s5cmd/pull/884)) Terry Rankine
+- The minimum Go version to build from source is 1.26. The Docker image builds with Go 1.27.
+
+#### Security
+- `cp`, `mv` and `sync` refuse S3 keys that would be written outside a local destination (for example `data/../../evil`). The object is refused with an error, the other objects are still processed, and the command exits non-zero. On Windows, keys with backslash-separated `..` segments or a colon are refused too. ([#872](https://github.com/peak/s5cmd/issues/872))
+
+#### Bug fixes
+- `sync --delete` no longer deletes destination objects that are excluded by `--exclude` or not matched by `--include`. ([#815](https://github.com/peak/s5cmd/issues/815)) ([#883](https://github.com/peak/s5cmd/pull/883)) Terry Rankine
+- `sync` uses `--source-region` and `--destination-region` when listing the source and the destination. ([#816](https://github.com/peak/s5cmd/issues/816))
+- `rm` can delete objects whose key ends with `/` (directory markers), with `--raw` or with a wildcard. ([#834](https://github.com/peak/s5cmd/issues/834))
+- `cp --no-clobber` checks the destination in the region given by `--destination-region`. ([#839](https://github.com/peak/s5cmd/issues/839))
+- `s5cmd` terminates itself with SIGINT or SIGTERM after cleanup, so shells and supervisors can see it was interrupted. On Windows it exits with 130. ([#615](https://github.com/peak/s5cmd/issues/615))
+- `sync` compiles against newer `lanrat/extsort` releases (the sort output channels are receive-only). ([#835](https://github.com/peak/s5cmd/issues/835))
+- `cp` and `sync` return an error on "too many open files" instead of calling `os.Exit` from a worker, so the progress bar, the log and the `--stat` summary are finished and `run` is not killed. ([#882](https://github.com/peak/s5cmd/pull/882)) Terry Rankine
+- `sync` no longer leaks an `os.Exit` goroutine, calls the cancel function it creates, does not block the planner when `Run` returns early, and skips nil errors sent by the sorter on cancelation. ([#882](https://github.com/peak/s5cmd/pull/882)) Terry Rankine
+- `sync` does not print a second "context canceled" error after the first listing error with `--exit-on-error`.
+- Fixed nil-pointer panics in `Copy` with `--no-such-upload-retry-count`, in `Stat`, in `--if-source-newer` when the modification time is missing, and in `parallel.Run` before `Init`. User-defined metadata no longer drops the retry ID. The "expected at most N arguments" error reports the right number. ([#880](https://github.com/peak/s5cmd/pull/880)) Terry Rankine
+- Fixed data races in the progress bar counters and the statistics maps, and a double close of the log channel. ([#881](https://github.com/peak/s5cmd/pull/881)) Terry Rankine
+- `--dry-run` returns a usable file handle instead of an empty `os.File` that panicked. ([#879](https://github.com/peak/s5cmd/pull/879)) Terry Rankine
+- Errors from endpoint parsing and region lookup are wrapped with `%w`, so `errors.Is` and `errors.As` work. ([#885](https://github.com/peak/s5cmd/pull/885)) Terry Rankine
+- A panic in a worker task is reported as an error instead of crashing the process in the middle of other transfers.
+- Canceling (SIGINT, `--exit-on-error`) stops queued tasks from starting in `cp`, `select` and `run`, and the `run` line reader no longer blocks forever when the consumer leaves.
+
+#### Improvements
+- The soft limit of open files is raised to the hard limit (capped at 65536), with a fallback on macOS, so the default 256 workers do not hit "too many open files".
+- The HTTP idle connection pool is sized to `--numworkers` x `--concurrency` (capped at 2048) instead of 2 per host.
+- Added `benchmark/` script that runs a `--numworkers` x `--concurrency` matrix for many small and a few large files.
+- Updated all dependencies. `urfave/cli` stays at v2.19.3 because newer versions break the e2e suite.
+
+#### Build and CI
+- CI runs build and tests on Linux, macOS and Windows with Go 1.26 and 1.27, and QA on Linux. The MinIO service container is started from a step.
+- The release workflow publishes to this repository's GitHub Releases only. The GCS test job, the Homebrew tap and the Docker Hub workflow, which targeted upstream accounts, are removed.
+- `.goreleaser.yml` uses config version 2.
+- Staticcheck skips SA1019, because aws-sdk-go v1 is deprecated as a whole.
+- The e2e tests no longer pass non-constant format strings to printf-like helpers (new `go vet` rule).
 
 ## v2.3.0 - 16 Dec 2024
 
