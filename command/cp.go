@@ -158,6 +158,10 @@ func NewSharedFlags() []cli.Flag {
 			},
 		},
 		&cli.StringFlag{
+			Name:  "checksum-algorithm",
+			Usage: "upload with an additional checksum that S3 verifies and stores with the object: CRC32C, CRC32, SHA256 or SHA1; reads each file one more time to compute it",
+		},
+		&cli.StringFlag{
 			Name:  "sse",
 			Usage: "perform server side encryption of the data at its destination, e.g. aws:kms",
 		},
@@ -322,6 +326,7 @@ type Copy struct {
 	contentDisposition    string
 	metadata              map[string]string
 	metadataDirective     string
+	checksumAlgorithm     storage.ChecksumAlgorithm
 	showProgress          bool
 	progressbar           progressbar.ProgressBar
 
@@ -374,6 +379,12 @@ func NewCopy(c *cli.Context, deleteSource bool) (*Copy, error) {
 		return nil, err
 	}
 
+	checksumAlgorithm, err := storage.ParseChecksumAlgorithm(c.String("checksum-algorithm"))
+	if err != nil {
+		printError(fullCommand(), c.Command.Name, err)
+		return nil, err
+	}
+
 	return &Copy{
 		src:          src,
 		dst:          dst,
@@ -403,6 +414,7 @@ func NewCopy(c *cli.Context, deleteSource bool) (*Copy, error) {
 		contentDisposition:    c.String("content-disposition"),
 		metadata:              metadata,
 		metadataDirective:     c.String("metadata-directive"),
+		checksumAlgorithm:     checksumAlgorithm,
 		showProgress:          c.Bool("show-progress"),
 		progressbar:           commandProgressBar,
 
@@ -767,6 +779,7 @@ func (c Copy) doUpload(ctx context.Context, srcurl *url.URL, dsturl *url.URL, ex
 		ContentDisposition: c.contentDisposition,
 		EncryptionMethod:   c.encryptionMethod,
 		EncryptionKeyID:    c.encryptionKeyID,
+		ChecksumAlgorithm:  string(c.checksumAlgorithm),
 	}
 
 	if c.contentType != "" {
@@ -1083,6 +1096,10 @@ func validateCopyCommand(c *cli.Context) error {
 		return err
 	}
 
+	if err := validateChecksumAlgorithm(c, srcurl, dsturl); err != nil {
+		return err
+	}
+
 	if err := checkVersioningWithGoogleEndpoint(c); err != nil {
 		return err
 	}
@@ -1095,6 +1112,22 @@ func validateCopyCommand(c *cli.Context) error {
 	default:
 		return nil
 	}
+}
+
+// validateChecksumAlgorithm checks the value of --checksum-algorithm and that
+// the command uploads. Downloads and server side copies do not send data from
+// this host, so there is nothing to protect and the flag would do nothing.
+func validateChecksumAlgorithm(c *cli.Context, srcurl, dsturl *url.URL) error {
+	if c.String("checksum-algorithm") == "" {
+		return nil
+	}
+	if _, err := storage.ParseChecksumAlgorithm(c.String("checksum-algorithm")); err != nil {
+		return err
+	}
+	if srcurl.IsRemote() || !dsturl.IsRemote() {
+		return fmt.Errorf("--checksum-algorithm only applies to uploads (local source, remote destination)")
+	}
+	return nil
 }
 
 func validateCopy(srcurl, dsturl *url.URL) error {
@@ -1183,6 +1216,12 @@ func (r *countingReaderWriter) ReadAt(p []byte, off int64) (int, error) {
 	}
 	r.mu.Unlock()
 	return n, err
+}
+
+// ReadAtNoProgress reads like ReadAt but does not count the bytes as
+// transferred. It is used to hash the data before it is uploaded.
+func (r *countingReaderWriter) ReadAtNoProgress(p []byte, off int64) (int, error) {
+	return r.fp.ReadAt(p, off)
 }
 
 func (r *countingReaderWriter) Seek(offset int64, whence int) (int64, error) {

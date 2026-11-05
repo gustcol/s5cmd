@@ -880,9 +880,18 @@ func (s *S3) Put(
 		}
 	}
 
+	checksumAlg := ChecksumAlgorithm(metadata.ChecksumAlgorithm)
+	if checksumAlg != "" {
+		input.ChecksumAlgorithm = aws.String(string(checksumAlg))
+	}
+
 	uploaderOptsFn := func(u *s3manager.Uploader) {
 		u.PartSize = partSize
 		u.Concurrency = concurrency
+		if checksumAlg != "" {
+			// fresh state for every upload attempt, see uploadChecksumOption.
+			u.RequestOptions = append(append([]request.Option(nil), u.RequestOptions...), uploadChecksumOption(checksumAlg))
+		}
 	}
 	_, err := s.uploader.UploadWithContext(ctx, input, uploaderOptsFn)
 

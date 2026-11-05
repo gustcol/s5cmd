@@ -1,6 +1,7 @@
 package e2e
 
 import (
+	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"strings"
@@ -12,7 +13,7 @@ import (
 	"gotest.tools/v3/fs"
 )
 
-func s3ServerEndpoint(t *testing.T, testdir *fs.Dir, loglvl, backend string, timeSource gofakes3.TimeSource, enableProxy bool) string {
+func s3ServerEndpoint(t *testing.T, testdir *fs.Dir, loglvl, backend string, timeSource gofakes3.TimeSource, enableProxy bool, layer *checksumLayer) string {
 	var s3backend gofakes3.Backend
 	switch backend {
 	case "mem":
@@ -51,7 +52,12 @@ func s3ServerEndpoint(t *testing.T, testdir *fs.Dir, loglvl, backend string, tim
 		)
 	}
 	faker := gofakes3.New(s3backend, opts...)
-	s3srv := httptest.NewServer(faker.Server())
+	var handler http.Handler = faker.Server()
+	if layer != nil {
+		layer.next = handler
+		handler = layer
+	}
+	s3srv := httptest.NewServer(handler)
 
 	t.Cleanup(func() {
 		s3srv.Close()

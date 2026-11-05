@@ -653,6 +653,32 @@ If the `SHA256` checksum mismatches, you will see an error like the one below.
 * **Number of retries:** `aws-cli` will retry up to five times to upload a file, while `s5cmd` will not retry.
 * **Checksums:** If you enable `Signature Version 4` in your `~/.aws/config` file, `aws-cli` will only check the `SHA256` checksum of a file  while `s5cmd` will check both the `MD5` and `SHA256` checksums.
 
+#### End-to-end checksums on upload (`--checksum-algorithm`)
+
+`Content-MD5` and `X-Amz-Content-Sha256` protect one request. With
+`--checksum-algorithm` an upload also sends an additional checksum of the data,
+which S3 verifies on arrival and stores with the object. It works with `cp`,
+`mv` and `sync` when uploading from a local path to S3.
+
+    s5cmd cp --checksum-algorithm CRC32C bigfile s3://bucket/
+    s5cmd sync --checksum-algorithm SHA256 dir/ s3://bucket/prefix/
+
+Supported algorithms are `CRC32C`, `CRC32`, `SHA256` and `SHA1`. `CRC64NVME` is
+not supported, because the AWS SDK for Go v1 that `s5cmd` uses has no support
+for it. The option is off by default and nothing changes without it.
+
+The SDK does not compute these checksums for you, so `s5cmd` does. For an
+upload in one request, the file is read once to compute the checksum and again to
+send it. For a multipart upload every part is hashed by the worker that uploads
+it, so the parts of a file are still hashed in parallel, and the checksums of
+all parts are sent when the upload is completed. S3 then stores a checksum of the
+part checksums (the value ends with `-<number of parts>`). The extra cost is
+reading each file a second time (served from the page cache for files that fit in
+memory) and the CPU time of the algorithm. `CRC32C` and `CRC32` are very cheap on
+current CPUs, `SHA256` and `SHA1` cost more, see the numbers in the changelog.
+`--checksum-algorithm` is refused for downloads and for copies between buckets,
+where there is no upload from this host to protect.
+
 **Sources:**
 - [AWS Go SDK](https://github.com/aws/aws-sdk-go/blob/b75b2a7b3cb40ece5774ed07dde44903481a2d4d/service/s3/customizations.go#L56)
 - [AWS CLI Docs](https://docs.aws.amazon.com/cli/latest/topic/s3-faq.html)

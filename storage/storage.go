@@ -248,6 +248,10 @@ type Metadata struct {
 	EncryptionMethod   string
 	EncryptionKeyID    string
 
+	// ChecksumAlgorithm, when set, makes an upload send an additional
+	// checksum that S3 verifies and stores with the object.
+	ChecksumAlgorithm string
+
 	UserDefined map[string]string
 
 	// MetadataDirective is used to specify whether the metadata is copied from

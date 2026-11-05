@@ -78,6 +78,7 @@ type setupOpts struct {
 	region      string
 	timeSource  gofakes3.TimeSource
 	enableProxy bool
+	checksums   *checksumLayer
 }
 
 type option func(*setupOpts)
@@ -115,6 +116,14 @@ func withRegion(region string) option {
 func withTimeSource(timeSource gofakes3.TimeSource) option {
 	return func(opts *setupOpts) {
 		opts.timeSource = timeSource
+	}
+}
+
+// withChecksumLayer puts layer in front of the fake S3 server, so uploads
+// with checksums are verified and the checksums can be read back.
+func withChecksumLayer(layer *checksumLayer) option {
+	return func(opts *setupOpts) {
+		opts.checksums = layer
 	}
 }
 
@@ -214,7 +223,7 @@ func server(t *testing.T, testdir *fs.Dir, opts *setupOpts) string {
 		s3LogLevel = "info" // aws has no level other than 'debug'
 	}
 
-	endpoint := s3ServerEndpoint(t, testdir, s3LogLevel, opts.s3backend, opts.timeSource, opts.enableProxy)
+	endpoint := s3ServerEndpoint(t, testdir, s3LogLevel, opts.s3backend, opts.timeSource, opts.enableProxy, opts.checksums)
 
 	return endpoint
 }
