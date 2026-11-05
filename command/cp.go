@@ -557,7 +557,9 @@ func (c Copy) Run(ctx context.Context) error {
 			printError(c.fullCommand, c.op, err)
 			continue
 		}
-		parallel.Run(task, waiter)
+		if !parallel.RunContext(ctx, task, waiter) {
+			break
+		}
 	}
 	waiter.Wait()
 	<-errDoneCh

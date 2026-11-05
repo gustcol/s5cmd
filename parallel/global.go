@@ -1,6 +1,10 @@
 package parallel
 
-import "github.com/peak/s5cmd/v2/parallel/fdlimit"
+import (
+	"context"
+
+	"github.com/peak/s5cmd/v2/parallel/fdlimit"
+)
 
 var global *Manager
 
@@ -11,8 +15,7 @@ func Init(workercount int) {
 	global = New(workercount)
 }
 
-// Close waits all jobs to finish and
-// closes the semaphore of global ParallelManager.
+// Close waits all jobs to finish.
 func Close() {
 	if global != nil {
 		global.Close()
@@ -26,4 +29,13 @@ func Run(task Task, waiter *Waiter) {
 		panic("parallel: Run called before Init")
 	}
 	global.Run(task, waiter)
+}
+
+// RunContext runs global ParallelManager. See Manager.RunContext.
+// Init must be called before RunContext, otherwise this will panic.
+func RunContext(ctx context.Context, task Task, waiter *Waiter) bool {
+	if global == nil {
+		panic("parallel: RunContext called before Init")
+	}
+	return global.RunContext(ctx, task, waiter)
 }

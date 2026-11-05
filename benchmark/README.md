@@ -108,3 +108,16 @@ When using `-hf` and `-sf` flags, use quotes like above and start with an empty 
  | download very large file | `master` | 2501.010 | 2501.010 | 2501.010 | 1.00 |
  | remove very large file | `PR:478` | 1.011 | 1.011 | 1.011 | 1.00 |
  | remove very large file | `master` | 1.145 | 1.145 | 1.145 | 1.13 |
+
+### Concurrency matrix
+
+`concurrency_matrix.sh` measures `--numworkers` x `--concurrency` on a Linux host against any S3 compatible endpoint (for example MinIO). It runs upload and download for 2,000 files of 64 KiB and 4 files of 1 GiB and prints a TSV table with seconds, MiB/s, objects/s and peak RSS (from GNU `time`).
+
+```
+export S3_ENDPOINT_URL=http://127.0.0.1:9000
+export AWS_ACCESS_KEY_ID=... AWS_SECRET_ACCESS_KEY=...
+export BENCH_BUCKET=bench            # must exist
+S5CMD_BIN=./s5cmd BENCH_WORKDIR=/mnt/scratch ./concurrency_matrix.sh | tee matrix.tsv
+```
+
+`WORKERS`, `CONCURRENCY`, `SCENARIOS`, `SMALL_COUNT`, `BIG_COUNT` and the size variables are documented at the top of the script. The big scenario needs about 8 GiB of free space in `BENCH_WORKDIR` (source plus downloaded copy).

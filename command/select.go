@@ -374,7 +374,9 @@ func (s Select) Run(ctx context.Context) error {
 		}
 
 		task := s.prepareTask(ctx, client, object.URL, resultCh)
-		parallel.Run(task, waiter)
+		if !parallel.RunContext(ctx, task, waiter) {
+			break
+		}
 
 	}
 
