@@ -1272,20 +1272,23 @@ func (sc *SessionCache) newSession(ctx context.Context, opts Options) (*session.
 		endpointURL = sentinelURL
 	}
 
-	var wrapped *http.Client
 	httpClient, err := newHTTPClient(opts)
 	if err != nil {
 		return nil, err
 	}
 	// A client that spreads requests over several transports is not a plain
-	// *http.Transport, which the SDK needs for its own TLS handling. It is
-	// set on the session after creation instead.
-	plainTransport := true
+	// *http.Transport, which the SDK needs for its own TLS handling
+	// (AWS_CA_BUNDLE, ca_bundle in the shared config, client certificates).
+	// The session gets a plain probe transport for that, and the TLS settings
+	// the SDK resolves are copied to the real transports afterwards.
+	var multi *roundRobinTransport
+	var probe *http.Transport
 	if httpClient != nil {
-		_, plainTransport = httpClient.Transport.(*http.Transport)
+		multi, _ = httpClient.Transport.(*roundRobinTransport)
 	}
-	if !plainTransport {
-		httpClient, wrapped = nil, httpClient
+	if multi != nil {
+		probe = &http.Transport{}
+		httpClient = &http.Client{Transport: probe}
 	}
 	awsCfg = awsCfg.
 		WithEndpoint(endpointURL.String()).
@@ -1322,7 +1325,7 @@ func (sc *SessionCache) newSession(ctx context.Context, opts Options) (*session.
 		Config:            *awsCfg,
 		SharedConfigState: useSharedConfig,
 	}
-	if opts.CACert != "" && plainTransport {
+	if opts.CACert != "" {
 		// The SDK replaces the root CAs of our transport with AWS_CA_BUNDLE
 		// (or ca_bundle from the shared config) when it is set. Handing it the
 		// same file keeps --ca-cert in charge.
@@ -1337,8 +1340,9 @@ func (sc *SessionCache) newSession(ctx context.Context, opts Options) (*session.
 	if err != nil {
 		return nil, err
 	}
-	if wrapped != nil {
-		sess.Config.HTTPClient = wrapped
+	if multi != nil {
+		multi.adoptSDKTLS(probe)
+		sess.Config.HTTPClient = &http.Client{Transport: multi}
 	}
 	sess.Handlers.Complete.PushBack(protocolLogger(opts))
 
@@ -1467,15 +1471,6 @@ func newHTTPClient(opts Options) (*http.Client, error) {
 	}
 
 	conns := transportConns(opts)
-	if conns > 1 {
-		// The SDK cannot apply AWS_CA_BUNDLE to a wrapped transport, so
-		// the variables it reads are honored here.
-		opts = withEnvTLS(opts)
-		tlsCfg, err = tlsConfig(opts)
-		if err != nil {
-			return nil, err
-		}
-	}
 
 	custom := tlsCfg != nil || opts.ConnPoolSize > 0 ||
 		opts.Transport == TransportHTTP1 || opts.Transport == TransportHTTP2

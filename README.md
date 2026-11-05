@@ -199,7 +199,7 @@ S5CMD_TRANSPORT=http2 s5cmd cp 's3://bucket/*' .
 
 Go sends all requests to one host over a single HTTP/2 connection, so a bulk copy is limited by what one TCP stream and one core can do, however many workers you run. `--transport http2` therefore opens `--transport-conns N` independent connections (env `S5CMD_TRANSPORT_CONNS`, default 8) and uses them round-robin. Each one has its own TLS state, flow-control windows and idle pool, and all share the same TLS settings.
 
-`--transport-conns` is ignored (with a debug message) for `auto` and `http1`. With `--transport-conns 1`, HTTP/2 uses one connection as Go does by default. With `AWS_CA_BUNDLE` and the `AWS_SDK_GO_CLIENT_TLS_*` variables it works like the other modes, but `ca_bundle` in the shared AWS config file is not read when N is greater than 1; use `--ca-cert`.
+`--transport-conns` is ignored (with a debug message) for `auto` and `http1`. With `--transport-conns 1`, HTTP/2 uses one connection as Go does by default. `--ca-cert`, `AWS_CA_BUNDLE`, `ca_bundle` in the shared AWS config and `AWS_SDK_GO_CLIENT_TLS_CERT`/`_KEY` work the same as in the other modes.
 
 One measurement, 4 GiB over a 40 Gbit LAN with a TLS reverse proxy in front of the S3 server (single runs, treat differences under 15% as noise):
 

@@ -191,19 +191,6 @@ func transportName(mode string) string {
 	return mode
 }
 
-// withEnvTLS fills in the CA bundle and the client certificate from the
-// variables the AWS SDK reads, when the flags are not given.
-func withEnvTLS(opts Options) Options {
-	if opts.CACert == "" {
-		opts.CACert = os.Getenv("AWS_CA_BUNDLE")
-	}
-	if opts.ClientCert == "" && opts.ClientKey == "" {
-		opts.ClientCert = os.Getenv("AWS_SDK_GO_CLIENT_TLS_CERT")
-		opts.ClientKey = os.Getenv("AWS_SDK_GO_CLIENT_TLS_KEY")
-	}
-	return opts
-}
-
 // roundRobinTransport spreads requests over several independent transports.
 // Each one has its own connection pool, so with HTTP/2 each opens its own
 // connection and has its own flow-control windows.
@@ -221,4 +208,25 @@ func (r *roundRobinTransport) CloseIdleConnections() {
 	for _, t := range r.transports {
 		t.CloseIdleConnections()
 	}
+}
+
+// adoptSDKTLS copies the TLS settings that the SDK resolved while it created
+// the session onto the transports. probe is the plain transport the session
+// was given: the SDK loads the CA bundle (--ca-cert, AWS_CA_BUNDLE or ca_bundle
+// from the shared config, in that order of priority) and the client
+// certificate from AWS_SDK_GO_CLIENT_TLS_CERT and _KEY into it. The
+// transports share one tls.Config, so it is updated once, before any request.
+func (r *roundRobinTransport) adoptSDKTLS(probe *http.Transport) {
+	sdk := probe.TLSClientConfig
+	if sdk == nil || len(r.transports) == 0 {
+		return
+	}
+	cfg := r.transports[0].TLSClientConfig
+	if cfg == nil {
+		return
+	}
+	if sdk.RootCAs != nil {
+		cfg.RootCAs = sdk.RootCAs
+	}
+	cfg.Certificates = append(cfg.Certificates, sdk.Certificates...)
 }

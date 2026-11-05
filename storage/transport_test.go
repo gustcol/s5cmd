@@ -1,6 +1,7 @@
 package storage
 
 import (
+	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
@@ -19,6 +20,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/aws/aws-sdk-go/aws/session"
 
 	"github.com/peak/s5cmd/v2/log"
 )
@@ -360,23 +363,118 @@ func TestTransportConnsValidation(t *testing.T) {
 	}
 }
 
-func TestTransportConnsHonorsAWSEnvTLS(t *testing.T) {
+// The SDK resolves the CA bundle from --ca-cert, AWS_CA_BUNDLE and ca_bundle in
+// the shared config. All three must reach the transports of a multi connection
+// client, which the SDK cannot configure itself.
+func TestTransportConnsTrustAnchors(t *testing.T) {
 	pki := newTestPKI(t)
-	t.Setenv("AWS_CA_BUNDLE", pki.caFile)
+	other := newTestPKI(t) // a CA the server does not use
+
+	var accepted atomic.Int32
+	srv := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte("ok"))
+	}))
+	srv.EnableHTTP2 = true
+	srv.TLS = &tls.Config{Certificates: []tls.Certificate{pki.serverCert}}
+	srv.Config.ConnState = func(_ net.Conn, s http.ConnState) {
+		if s == http.StateNew {
+			accepted.Add(1)
+		}
+	}
+	srv.StartTLS()
+	t.Cleanup(srv.Close)
+
+	configWith := func(ca string) string {
+		return writeFile(t, t.TempDir(), "config", "[default]\nca_bundle = "+ca+"\n")
+	}
+
+	tests := []struct {
+		name     string
+		flag     string
+		env      string
+		sharedCA string
+		wantOK   bool
+	}{
+		{"flag", pki.caFile, "", "", true},
+		{"AWS_CA_BUNDLE", "", pki.caFile, "", true},
+		{"shared config ca_bundle", "", "", pki.caFile, true},
+		{"flag wins over a wrong AWS_CA_BUNDLE", pki.caFile, other.caFile, "", true},
+		{"AWS_CA_BUNDLE wins over a wrong shared config", "", pki.caFile, other.caFile, true},
+		{"wrong CA is rejected", "", other.caFile, "", false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			cfgFile := filepath.Join(t.TempDir(), "none")
+			if tc.sharedCA != "" {
+				cfgFile = configWith(tc.sharedCA)
+			}
+			t.Setenv("AWS_SDK_LOAD_CONFIG", "1")
+			t.Setenv("AWS_CONFIG_FILE", cfgFile)
+			t.Setenv("AWS_SHARED_CREDENTIALS_FILE", filepath.Join(t.TempDir(), "none"))
+			t.Setenv("AWS_CA_BUNDLE", tc.env)
+			t.Setenv("AWS_SDK_GO_CLIENT_TLS_CERT", "")
+			t.Setenv("AWS_SDK_GO_CLIENT_TLS_KEY", "")
+
+			accepted.Store(0)
+			sc := &SessionCache{sessions: map[Options]*session.Session{}}
+			sess, err := sc.newSession(context.Background(), Options{
+				Endpoint:       srv.URL,
+				CACert:         tc.flag,
+				Transport:      TransportHTTP2,
+				TransportConns: 4,
+				LogLevel:       log.LevelError,
+				region:         "us-east-1",
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			client := sess.Config.HTTPClient
+			if _, ok := client.Transport.(*roundRobinTransport); !ok {
+				t.Fatalf("transport = %T, want the multi connection transport", client.Transport)
+			}
+			for i := 0; i < 8; i++ {
+				resp, err := client.Get(srv.URL)
+				if !tc.wantOK {
+					if err == nil {
+						resp.Body.Close()
+						t.Fatal("request must fail with an untrusted CA")
+					}
+					return
+				}
+				if err != nil {
+					t.Fatal(err)
+				}
+				io.Copy(io.Discard, resp.Body)
+				resp.Body.Close()
+			}
+			if got := accepted.Load(); got != 4 {
+				t.Errorf("accepted connections = %d, want 4", got)
+			}
+		})
+	}
+}
+
+func TestTransportConnsClientCertFromEnv(t *testing.T) {
+	pki := newTestPKI(t)
 	t.Setenv("AWS_SDK_GO_CLIENT_TLS_CERT", pki.clientCert)
 	t.Setenv("AWS_SDK_GO_CLIENT_TLS_KEY", pki.clientKey)
+	t.Setenv("AWS_CA_BUNDLE", "")
 
-	c, err := newHTTPClient(Options{Transport: TransportHTTP2, TransportConns: 2})
+	sc := &SessionCache{sessions: map[Options]*session.Session{}}
+	sess, err := sc.newSession(context.Background(), Options{
+		CACert:         pki.caFile,
+		Transport:      TransportHTTP2,
+		TransportConns: 2,
+		LogLevel:       log.LevelError,
+		region:         "us-east-1",
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	rr := c.Transport.(*roundRobinTransport)
-	if len(rr.transports) != 2 {
-		t.Fatalf("transports = %d, want 2", len(rr.transports))
-	}
+	rr := sess.Config.HTTPClient.Transport.(*roundRobinTransport)
 	cfg := rr.transports[0].TLSClientConfig
-	if cfg.RootCAs == nil || len(cfg.Certificates) != 1 {
-		t.Errorf("env TLS settings not applied: %+v", cfg)
+	if len(cfg.Certificates) != 1 || cfg.RootCAs == nil {
+		t.Errorf("TLS settings not adopted: %d certificates, RootCAs %v", len(cfg.Certificates), cfg.RootCAs)
 	}
 	if cfg != rr.transports[1].TLSClientConfig {
 		t.Error("transports must share one TLS config")
