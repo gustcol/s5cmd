@@ -1,4 +1,9 @@
 # Changelog
+## Unreleased
+
+#### Breaking changes
+- `DEBUG` and `TRACE` log messages are now written to stderr instead of stdout, so they no longer mix with command output. ([#851](https://github.com/peak/s5cmd/issues/851))
+
 ## v2.3.0 - 16 Dec 2024
 
 #### Breaking changes
