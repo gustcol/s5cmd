@@ -1341,3 +1341,76 @@ func (e tempError) Error() string { return e.err.Error() }
 func (e tempError) Temporary() bool { return e.temp }
 
 func (e *tempError) Unwrap() error { return e.err }
+
+// Keys ending in "/" that come back in Contents or Versions are real objects,
+// so they are flagged as DirMarker. Common prefixes are not objects and must
+// not be.
+func TestS3ListDirMarker(t *testing.T) {
+	tests := []struct {
+		name string
+		url  string
+		data interface{}
+	}{
+		{
+			name: "list_objects_v2",
+			url:  "s3://bucket/key/*",
+			data: &s3.ListObjectsV2Output{
+				CommonPrefixes: []*s3.CommonPrefix{{Prefix: aws.String("key/prefix/")}},
+				Contents: []*s3.Object{
+					{Key: aws.String("key/dir/")},
+					{Key: aws.String("key/file")},
+				},
+			},
+		},
+		{
+			name: "list_object_versions",
+			url:  "s3://bucket/key/*",
+			data: &s3.ListObjectVersionsOutput{
+				CommonPrefixes: []*s3.CommonPrefix{{Prefix: aws.String("key/prefix/")}},
+				Versions: []*s3.ObjectVersion{
+					{Key: aws.String("key/dir/"), VersionId: aws.String("v1")},
+					{Key: aws.String("key/file"), VersionId: aws.String("v2")},
+				},
+			},
+		},
+	}
+
+	for _, tc := range tests {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			u, err := url.New(tc.url, url.WithAllVersions(tc.name == "list_object_versions"))
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			mockAPI := s3.New(unit.Session)
+			mockS3 := &S3{api: mockAPI}
+
+			mockAPI.Handlers.Send.Clear()
+			mockAPI.Handlers.Unmarshal.Clear()
+			mockAPI.Handlers.UnmarshalMeta.Clear()
+			mockAPI.Handlers.ValidateResponse.Clear()
+			mockAPI.Handlers.Unmarshal.PushBack(func(r *request.Request) {
+				r.Data = tc.data
+			})
+
+			type result struct{ isDir, dirMarker bool }
+			got := map[string]result{}
+			for obj := range mockS3.List(context.Background(), u, true) {
+				if obj.Err != nil {
+					t.Fatalf("unexpected error: %v", obj.Err)
+				}
+				got[obj.URL.Absolute()] = result{obj.Type.IsDir(), obj.DirMarker}
+			}
+
+			want := map[string]result{
+				"s3://bucket/key/prefix/": {isDir: true, dirMarker: false},
+				"s3://bucket/key/dir/":    {isDir: true, dirMarker: true},
+				"s3://bucket/key/file":    {isDir: false, dirMarker: false},
+			}
+			if diff := cmp.Diff(want, got, cmp.AllowUnexported(result{})); diff != "" {
+				t.Errorf("(-want +got):\n%v", diff)
+			}
+		})
+	}
+}

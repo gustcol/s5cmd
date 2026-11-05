@@ -178,7 +178,7 @@ func (d Delete) Run(ctx context.Context) error {
 		defer close(urlch)
 
 		for object := range objch {
-			if object.Type.IsDir() || errorpkg.IsCancelation(object.Err) {
+			if (object.Type.IsDir() && !object.DirMarker) || errorpkg.IsCancelation(object.Err) {
 				continue
 			}
 
@@ -275,8 +275,16 @@ func validateRMCommand(c *cli.Context) error {
 	)
 	for i, srcurl := range srcurls {
 		// we don't operate on S3 prefixes for copy and delete operations.
-		if srcurl.IsBucket() || srcurl.IsPrefix() {
+		// With --raw the user names an object key that happens to end with
+		// "/", so it is not treated as a prefix.
+		if srcurl.IsBucket() || (srcurl.IsPrefix() && !srcurl.IsRaw()) {
 			return fmt.Errorf("s3 bucket/prefix cannot be used for delete operations (forgot wildcard character?)")
+		}
+
+		// Listing all versions of a key works by listing the key as a prefix,
+		// which for "dir/" would also match every key below it.
+		if srcurl.IsPrefix() && srcurl.AllVersions {
+			return fmt.Errorf("--raw with --all-versions cannot be used with a key ending in \"/\", it would match every key under that prefix")
 		}
 
 		if srcurl.IsRemote() {

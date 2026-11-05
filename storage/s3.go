@@ -238,6 +238,7 @@ func (s *S3) listObjectVersions(ctx context.Context, url *url.URL) <-chan *Objec
 						Etag:         strings.Trim(etag, `"`),
 						ModTime:      &mod,
 						Type:         ObjectType{objtype},
+						DirMarker:    objtype.IsDir(),
 						Size:         aws.Int64Value(v.Size),
 						StorageClass: StorageClass(aws.StringValue(v.StorageClass)),
 					}
@@ -271,10 +272,11 @@ func (s *S3) listObjectVersions(ctx context.Context, url *url.URL) <-chan *Objec
 					newurl.VersionID = aws.StringValue(d.VersionId)
 
 					objCh <- &Object{
-						URL:     newurl,
-						ModTime: &mod,
-						Type:    ObjectType{objtype},
-						Size:    0,
+						URL:       newurl,
+						ModTime:   &mod,
+						Type:      ObjectType{objtype},
+						DirMarker: objtype.IsDir(),
+						Size:      0,
 					}
 
 					objectFound = true
@@ -362,6 +364,7 @@ func (s *S3) listObjectsV2(ctx context.Context, url *url.URL) <-chan *Object {
 					Etag:         strings.Trim(etag, `"`),
 					ModTime:      &mod,
 					Type:         ObjectType{objtype},
+					DirMarker:    objtype.IsDir(),
 					Size:         aws.Int64Value(c.Size),
 					StorageClass: StorageClass(aws.StringValue(c.StorageClass)),
 				}
@@ -453,6 +456,7 @@ func (s *S3) listObjects(ctx context.Context, url *url.URL) <-chan *Object {
 					Etag:         strings.Trim(etag, `"`),
 					ModTime:      &mod,
 					Type:         ObjectType{objtype},
+					DirMarker:    objtype.IsDir(),
 					Size:         aws.Int64Value(c.Size),
 					StorageClass: StorageClass(aws.StringValue(c.StorageClass)),
 				}

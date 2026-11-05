@@ -114,6 +114,11 @@ type Object struct {
 	Err          error        `json:"error,omitempty"`
 	retryID      string
 
+	// DirMarker is set for real remote objects (as opposed to common
+	// prefixes) whose key ends with "/". They are typed as directories
+	// like prefixes are, but they exist and can be deleted.
+	DirMarker bool `json:"-"`
+
 	// the VersionID field exist only for JSON Marshall, it must not be used for
 	// any other purpose. URL.VersionID must be used instead.
 	VersionID string `json:"version_id,omitempty"`
