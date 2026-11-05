@@ -2938,6 +2938,35 @@ func TestSyncS3WildcardWithNoMatchExitsWithError(t *testing.T) {
 	})
 }
 
+// sync --source-region us-east-1 --destination-region us-east-1 s3://bucket/* s3://dstbucket/
+func TestSyncS3BucketToS3BucketWithRegionFlags(t *testing.T) {
+	t.Parallel()
+
+	s3client, s5cmd := setup(t)
+
+	srcbucket := s3BucketFromTestName(t)
+	dstbucket := s3BucketFromTestNameWithPrefix(t, "dst")
+
+	createBucket(t, s3client, srcbucket)
+	createBucket(t, s3client, dstbucket)
+
+	putFile(t, s3client, srcbucket, "readme.md", "S: this is a readme file")
+
+	src := fmt.Sprintf("s3://%v/", srcbucket)
+	dst := fmt.Sprintf("s3://%v/", dstbucket)
+
+	cmd := s5cmd("sync", "--source-region", "us-east-1", "--destination-region", "us-east-1", src+"*", dst)
+	result := icmd.RunCmd(cmd)
+
+	result.Assert(t, icmd.Success)
+
+	assertLines(t, result.Stdout(), map[int]compareFunc{
+		0: equals(`cp %vreadme.md %vreadme.md`, src, dst),
+	})
+
+	assert.Assert(t, ensureS3Object(s3client, dstbucket, "readme.md", "S: this is a readme file"))
+}
+
 // If source path contains a special file it should not be synced
 func TestSyncSocketDestinationEmpty(t *testing.T) {
 	if runtime.GOOS == "windows" {

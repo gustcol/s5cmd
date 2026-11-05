@@ -202,6 +202,24 @@ func NewSync(c *cli.Context) Sync {
 	}
 }
 
+// srcStorageOpts returns the storage options for talking to the source: the
+// common options, with the region set to --source-region when that flag is
+// set. It mirrors what cp does for the objects it copies.
+func (s Sync) srcStorageOpts() storage.Options {
+	opts := s.storageOpts
+	if s.srcRegion != "" {
+		opts.SetRegion(s.srcRegion)
+	}
+	return opts
+}
+
+// dstStorageOpts returns the storage options for talking to the destination.
+// Like Copy.dstStorageOpts, it starts from the source options and replaces
+// the region with --destination-region when that flag is set.
+func (s Sync) dstStorageOpts() storage.Options {
+	return Copy{storageOpts: s.srcStorageOpts(), dstRegion: s.dstRegion}.dstStorageOpts()
+}
+
 // Run compares files, plans necessary s5cmd commands to execute
 // and executes them in order to sync source to destination.
 func (s Sync) Run(c *cli.Context) error {
@@ -239,7 +257,7 @@ func (s Sync) Run(c *cli.Context) error {
 
 	isBatch := srcurl.IsWildcard()
 	if !isBatch && !srcurl.IsRemote() {
-		sourceClient, err := storage.NewClient(ctx, srcurl, s.storageOpts)
+		sourceClient, err := storage.NewClient(ctx, srcurl, s.srcStorageOpts())
 		if err != nil {
 			return err
 		}
@@ -350,12 +368,12 @@ func compareObjects(sourceObjects, destObjects chan *storage.Object, isSrcBatch 
 // given URLs. The returned channels gives objects sorted in ascending order
 // with respect to their url.Relative path. See also storage.Less.
 func (s Sync) getSourceAndDestinationObjects(ctx context.Context, cancel context.CancelFunc, srcurl, dsturl *url.URL) (chan *storage.Object, chan *storage.Object, error) {
-	sourceClient, err := storage.NewClient(ctx, srcurl, s.storageOpts)
+	sourceClient, err := storage.NewClient(ctx, srcurl, s.srcStorageOpts())
 	if err != nil {
 		return nil, nil, err
 	}
 
-	destClient, err := storage.NewClient(ctx, dsturl, s.storageOpts)
+	destClient, err := storage.NewClient(ctx, dsturl, s.dstStorageOpts())
 	if err != nil {
 		return nil, nil, err
 	}
