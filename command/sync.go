@@ -592,6 +592,12 @@ func (s Sync) shouldStopSync(err error) bool {
 	if err == storage.ErrNoObjectFound {
 		return false
 	}
+	// A cancelation is the result of an earlier failure (or of the user
+	// interrupting), not a failure of its own. Reporting it would print an
+	// extra error line after the one that caused the cancelation.
+	if errorpkg.IsCancelation(err) {
+		return false
+	}
 	if awsErr, ok := err.(awserr.Error); ok {
 		switch awsErr.Code() {
 		case "AccessDenied", "NoSuchBucket":
