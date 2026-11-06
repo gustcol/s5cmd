@@ -3173,3 +3173,51 @@ func TestSyncS3BucketToLocalWithDeleteAndIncludeFilterDestinationSpelling(t *tes
 	)
 	assert.Assert(t, fs.Equal(parent.Path(), expected))
 }
+
+// sync --delete must not delete anything when the source listing was
+// incomplete, since the objects it missed would look like extra files.
+func TestSyncLocalToS3BucketWithDeleteAndUnreadableSourceDirectory(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("directory permissions are not enforced the same way on Windows")
+	}
+	if os.Geteuid() == 0 {
+		t.Skip("root can read any directory")
+	}
+
+	s3client, s5cmd := setup(t)
+
+	bucket := s3BucketFromTestName(t)
+	createBucket(t, s3client, bucket)
+
+	workdir := fs.NewDir(t, "somedir",
+		fs.WithDir("a", fs.WithFile("f.txt", "A")),
+		fs.WithDir("m", fs.WithFile("g.txt", "M")),
+		fs.WithDir("z", fs.WithFile("h.txt", "Z")),
+	)
+	defer workdir.Remove()
+
+	content := map[string]string{
+		"a/f.txt": "A",
+		"m/g.txt": "M",
+		"z/h.txt": "Z",
+		"old.txt": "old",
+	}
+	for key, c := range content {
+		putFile(t, s3client, bucket, key, c)
+	}
+
+	unreadable := filepath.Join(workdir.Path(), "m")
+	assert.NilError(t, os.Chmod(unreadable, 0))
+	defer os.Chmod(unreadable, 0o755)
+
+	src := filepath.ToSlash(workdir.Path()) + "/"
+	dst := fmt.Sprintf("s3://%v/", bucket)
+
+	result := icmd.RunCmd(s5cmd("sync", "--delete", src, dst))
+	result.Assert(t, icmd.Expected{ExitCode: 1})
+	assert.Assert(t, strings.Contains(result.Stderr(), "not deleting: source listing incomplete"), result.Stderr())
+
+	for key, c := range content {
+		assert.Assert(t, ensureS3Object(s3client, bucket, key, c))
+	}
+}

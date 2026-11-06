@@ -2,6 +2,7 @@ package command
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"path/filepath"
@@ -131,6 +132,23 @@ func (e *syncErrors) add(err error) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	e.errs = multierror.Append(e.errs, err)
+}
+
+// incomplete reports whether any recorded error means the listing may have
+// missed objects. Finding no object at all is not one of them: syncing from
+// an empty source is a valid request.
+func (e *syncErrors) incomplete() bool {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.errs == nil {
+		return false
+	}
+	for _, err := range e.errs.Errors {
+		if err != storage.ErrNoObjectFound {
+			return true
+		}
+	}
+	return false
 }
 
 func (e *syncErrors) err() error {
@@ -601,6 +619,16 @@ func (s Sync) planRun(
 			}
 
 			if len(dstURLs) == 0 {
+				return
+			}
+
+			// Both listings are complete by now. If the source listing
+			// failed part way (an unreadable directory, a failed page), the
+			// objects it missed would look like they exist only in the
+			// destination, so deleting would remove data that is still
+			// present at the source.
+			if s.listErrs.incomplete() {
+				printError(s.fullCommand, s.op, errors.New("not deleting: source listing incomplete"))
 				return
 			}
 
