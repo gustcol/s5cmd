@@ -309,6 +309,67 @@ func TestCopyDownloadVerifyCannotVerify(t *testing.T) {
 	assert.DeepEqual(t, downloadedFiles(t, workdir.Join("out")), []string{"obj"})
 }
 
+func TestCopyDownloadVerifyStrictCannotVerify(t *testing.T) {
+	t.Parallel()
+
+	layer := newChecksumLayer()
+	layer.setSSEKMS()
+	s3client, s5cmd := setup(t, withChecksumLayer(layer))
+	bucket := s3BucketFromTestName(t)
+	createBucket(t, s3client, bucket)
+
+	workdir := fs.NewDir(t, bucket, fs.WithFile("obj", "content"), fs.WithDir("out"))
+	defer workdir.Remove()
+	icmd.RunCmd(s5cmd("cp", filepath.ToSlash(workdir.Join("obj")), fmt.Sprintf("s3://%v/obj", bucket))).Assert(t, icmd.Success)
+
+	// nothing to compare with: --verify warns, --verify-strict fails and leaves no file.
+	result := icmd.RunCmd(s5cmd("cp", "--verify-strict", fmt.Sprintf("s3://%v/obj", bucket), filepath.ToSlash(workdir.Join("out"))+"/"))
+	result.Assert(t, icmd.Expected{ExitCode: 1})
+	assert.Assert(t, strings.Contains(result.Stderr(), "cannot verify the download"), result.Stderr())
+	assert.DeepEqual(t, downloadedFiles(t, workdir.Join("out")), []string(nil))
+
+	// an existing destination is kept.
+	assert.NilError(t, os.WriteFile(workdir.Join("out", "obj"), []byte("old"), 0o644))
+	icmd.RunCmd(s5cmd("cp", "--verify-strict", fmt.Sprintf("s3://%v/obj", bucket), filepath.ToSlash(workdir.Join("out"))+"/")).Assert(t, icmd.Expected{ExitCode: 1})
+	data, err := os.ReadFile(workdir.Join("out", "obj"))
+	assert.NilError(t, err)
+	assert.Equal(t, string(data), "old")
+}
+
+func TestMoveDownloadVerifyStrictCannotVerifyKeepsSource(t *testing.T) {
+	t.Parallel()
+
+	layer := newChecksumLayer()
+	layer.setSSEKMS()
+	s3client, s5cmd := setup(t, withChecksumLayer(layer))
+	bucket := s3BucketFromTestName(t)
+	createBucket(t, s3client, bucket)
+	putFile(t, s3client, bucket, "obj", "some content")
+
+	workdir := fs.NewDir(t, bucket)
+	defer workdir.Remove()
+
+	icmd.RunCmd(s5cmd("mv", "--verify-strict", fmt.Sprintf("s3://%v/obj", bucket), filepath.ToSlash(workdir.Path())+"/")).Assert(t, icmd.Expected{ExitCode: 1})
+	assert.Assert(t, ensureS3Object(s3client, bucket, "obj", "some content"))
+	assert.DeepEqual(t, downloadedFiles(t, workdir.Path()), []string(nil))
+}
+
+func TestCopyDownloadVerifyStrictSucceedsWhenVerifiable(t *testing.T) {
+	t.Parallel()
+
+	layer := newChecksumLayer()
+	s3client, s5cmd := setup(t, withChecksumLayer(layer))
+	bucket := s3BucketFromTestName(t)
+	createBucket(t, s3client, bucket)
+
+	workdir := fs.NewDir(t, bucket, fs.WithFile("obj", "content"), fs.WithDir("out"))
+	defer workdir.Remove()
+	icmd.RunCmd(s5cmd("cp", "--checksum-algorithm", "CRC32C", filepath.ToSlash(workdir.Join("obj")), fmt.Sprintf("s3://%v/obj", bucket))).Assert(t, icmd.Success)
+
+	icmd.RunCmd(s5cmd("cp", "--verify-strict", fmt.Sprintf("s3://%v/obj", bucket), filepath.ToSlash(workdir.Join("out"))+"/")).Assert(t, icmd.Success)
+	assert.DeepEqual(t, downloadedFiles(t, workdir.Join("out")), []string{"obj"})
+}
+
 // TestCopyDownloadVerifyIrregularParts uploads an object in parts of
 // different sizes, which s5cmd never does, and checks that the download is
 // still verified, part by part.
@@ -401,7 +462,7 @@ func TestVerifyOnlyAppliesToDownloads(t *testing.T) {
 
 	result := icmd.RunCmd(s5cmd("cp", "--verify", filepath.ToSlash(workdir.Join("file")), fmt.Sprintf("s3://%v/", bucket)))
 	result.Assert(t, icmd.Expected{ExitCode: 1})
-	assert.Assert(t, strings.Contains(result.Stderr(), "--verify only applies to downloads"), result.Stderr())
+	assert.Assert(t, strings.Contains(result.Stderr(), "--verify and --verify-strict only apply to downloads"), result.Stderr())
 }
 
 // setMtime sets the modification time of a file.

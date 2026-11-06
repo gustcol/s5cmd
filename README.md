@@ -760,6 +760,13 @@ the parts of `--part-size`: use the part size of the upload, or the warning is
 all you get. Use `--checksum-algorithm` when uploading to make sure objects can
 be verified later.
 
+With `--verify-strict` (which includes `--verify`) a download that cannot be
+verified is treated like a bad one: the command exits with `1`, the temporary
+file is removed, an existing destination is kept and `mv` does not delete the
+source. Use it when a file must not be accepted unchecked, for example on a
+server that does not report the part layout of multipart objects. Objects
+that were uploaded with `--checksum-algorithm` can always be verified.
+
 `--verify` reads every downloaded file once more, and asks S3 for the object
 checksums with one extra `HEAD` request per object. For a multipart object
 uploaded with checksums, one more request per part is made when the check on

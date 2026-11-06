@@ -169,6 +169,10 @@ func NewSharedFlags() []cli.Flag {
 			Name:  "verify",
 			Usage: "after a download, check the local file against the checksum or ETag of the object and fail if they differ; reads each file one more time",
 		},
+		&cli.BoolFlag{
+			Name:  "verify-strict",
+			Usage: "like --verify, but also fail (and remove the downloaded file) when the object has nothing the file can be checked against",
+		},
 		&cli.StringFlag{
 			Name:  "sse",
 			Usage: "perform server side encryption of the data at its destination, e.g. aws:kms",
@@ -343,6 +347,7 @@ type Copy struct {
 	metadataDirective     string
 	checksumAlgorithm     storage.ChecksumAlgorithm
 	verify                bool
+	verifyStrict          bool
 	showProgress          bool
 	progressbar           progressbar.ProgressBar
 
@@ -432,7 +437,8 @@ func NewCopy(c *cli.Context, deleteSource bool) (*Copy, error) {
 		metadata:              metadata,
 		metadataDirective:     c.String("metadata-directive"),
 		checksumAlgorithm:     checksumAlgorithm,
-		verify:                c.Bool("verify"),
+		verify:                c.Bool("verify") || c.Bool("verify-strict"),
+		verifyStrict:          c.Bool("verify-strict"),
 		showProgress:          c.Bool("show-progress"),
 		progressbar:           commandProgressBar,
 
@@ -789,7 +795,8 @@ func (c Copy) doDownload(ctx context.Context, srcurl *url.URL, dsturl *url.URL) 
 // verifyDownload compares the downloaded file at path with the checksum or
 // the ETag of the remote object. It returns an error if they differ. If the
 // object does not report anything that can be compared, it prints a warning
-// and returns nil, because that is not evidence of a bad download.
+// and returns nil, because that is not evidence of a bad download. With
+// --verify-strict that case is an error too.
 func (c Copy) verifyDownload(ctx context.Context, client storage.IntegrityProvider, srcurl, dsturl *url.URL, path string) error {
 	cmp, err := storage.CompareFile(ctx, client, srcurl, path, storage.CompareOptions{
 		PartSizes: []int64{c.partSize},
@@ -804,6 +811,10 @@ func (c Copy) verifyDownload(ctx context.Context, client storage.IntegrityProvid
 		return nil
 	case storage.CompareDifferent:
 		return fmt.Errorf("verify failed, %s: %s", cmp.Method, cmp.Detail)
+	}
+
+	if c.verifyStrict {
+		return fmt.Errorf("verify failed, cannot verify the download: %s", cmp.Detail)
 	}
 
 	printWarning(fmt.Sprintf("%v %v %v", c.op, srcurl, dsturl), c.op,
@@ -1273,8 +1284,8 @@ func validateCopyCommand(c *cli.Context) error {
 		return fmt.Errorf("--checksum and --size-only cannot be used together")
 	}
 
-	if c.Bool("verify") && (!srcurl.IsRemote() || dsturl.IsRemote()) {
-		return fmt.Errorf("--verify only applies to downloads (remote source, local destination)")
+	if (c.Bool("verify") || c.Bool("verify-strict")) && (!srcurl.IsRemote() || dsturl.IsRemote()) {
+		return fmt.Errorf("--verify and --verify-strict only apply to downloads (remote source, local destination)")
 	}
 
 	if err := checkVersioningWithGoogleEndpoint(c); err != nil {

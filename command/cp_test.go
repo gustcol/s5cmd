@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -13,6 +14,7 @@ import (
 
 	"github.com/peak/s5cmd/v2/log"
 	"github.com/peak/s5cmd/v2/storage"
+	"github.com/peak/s5cmd/v2/storage/url"
 )
 
 func TestDstStorageOpts(t *testing.T) {
@@ -235,5 +237,37 @@ func TestCollectCopyErrorsFileLimit(t *testing.T) {
 	merr, ok := err.(*multierror.Error)
 	if !ok || len(merr.Errors) != 3 {
 		t.Errorf("expected 3 aggregated errors, got %v", err)
+	}
+}
+
+type fakeIntegrity struct{ info storage.Integrity }
+
+func (f fakeIntegrity) HeadIntegrity(context.Context, *url.URL, int64) (*storage.Integrity, error) {
+	i := f.info
+	return &i, nil
+}
+
+func TestVerifyDownloadStrict(t *testing.T) {
+	log.Init("error", false)
+	path := filepath.Join(t.TempDir(), "f")
+	assert.NilError(t, os.WriteFile(path, []byte("hello"), 0o644))
+	u, _ := url.New("s3://bucket/key")
+	d, _ := url.New(path)
+
+	// KMS object without a checksum: nothing to compare.
+	nothing := fakeIntegrity{storage.Integrity{Size: 5, ETag: "abc-1", ServerSideEncryption: "aws:kms"}}
+	assert.NilError(t, Copy{op: "cp"}.verifyDownload(context.Background(), nothing, u, d, path))
+	err := Copy{op: "cp", verifyStrict: true}.verifyDownload(context.Background(), nothing, u, d, path)
+	assert.ErrorContains(t, err, "cannot verify the download")
+
+	// a verifiable object passes in both modes, a bad one fails in both.
+	sum, err := storage.HashFile(context.Background(), storage.ChecksumCRC32C, path)
+	assert.NilError(t, err)
+	good := fakeIntegrity{storage.Integrity{Size: 5, Checksums: []storage.ObjectChecksum{{Algorithm: storage.ChecksumCRC32C, Value: sum}}}}
+	bad := fakeIntegrity{storage.Integrity{Size: 5, Checksums: []storage.ObjectChecksum{{Algorithm: storage.ChecksumCRC32C, Value: "AAAAAA=="}}}}
+	for _, strict := range []bool{false, true} {
+		c := Copy{op: "cp", verifyStrict: strict}
+		assert.NilError(t, c.verifyDownload(context.Background(), good, u, d, path))
+		assert.ErrorContains(t, c.verifyDownload(context.Background(), bad, u, d, path), "verify failed")
 	}
 }
