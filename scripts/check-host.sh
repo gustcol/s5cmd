@@ -155,6 +155,7 @@ FAILS=0
 WARNS=0
 # Set by check_open_files, used for the suggested command at the end.
 EFF_FD=
+AVAIL_MIB=
 
 # emit LEVEL NAME MESSAGE [FIX]
 emit() {
@@ -504,6 +505,7 @@ check_memory() {
 		return
 	fi
 	avail_mib=$((avail_kib / 1024))
+	AVAIL_MIB=$avail_mib
 	desc="available ${avail_mib} MiB, estimated need $est_mib MiB ($base_mib base + $STREAMS stdin upload(s) x $PART_MIB MiB x $((CONCURRENCY + 1)) buffers)${note:-}"
 	if [ "$avail_mib" -lt "$est_mib" ]; then
 		emit FAIL memory "$desc" "lower --part-size or --concurrency, or run fewer stdin uploads at once"
@@ -578,19 +580,39 @@ check_cpu
 # ---------------------------------------------------------------------------
 # Suggested command.
 #
-# Only the open file limit maps to an s5cmd flag. Each worker can hold one
-# local file and up to --concurrency connections, so the limit allows
-#   fit = (effective limit - FD_MARGIN) / (concurrency + 1)
-# workers (same formula as FD_NEED above). The other limits have a fix that
-# changes the machine instead: ports and socket buffers are sysctls, and
-# memory only depends on stdin uploads, so none of them is turned into a
-# different flag value here. Nothing is changed by this script.
+# Two limits map to s5cmd flags:
+#   * memory, for stdin uploads: part-size x (concurrency + 1) x streams must
+#     fit in half of the available memory (the WARN threshold of the memory
+#     check). Only --concurrency is lowered. --part-size is never lowered: in
+#     our tests 8 MiB parts with 16 or 32 parts in flight stalled or failed
+#     (6 of 13 uploads), while 50 and 200 MiB parts never did. If even
+#     --concurrency 1 does not fit, the suggestion says so.
+#   * the open file limit: each worker can hold one local file and up to
+#     --concurrency connections, so the limit allows
+#       fit = (effective limit - FD_MARGIN) / (concurrency + 1)
+#     workers (same formula as FD_NEED above).
+# The other limits (ports, socket buffers) have sysctl fixes that change the
+# machine instead, so none of them is turned into a flag value. Nothing is
+# changed by this script.
 # ---------------------------------------------------------------------------
 suggest() {
 	nw=$NUMWORKERS
+	conc=$CONCURRENCY
 	printf 'Suggested command for these settings:\n'
+	if is_uint "$AVAIL_MIB"; then
+		budget=$((AVAIL_MIB / 2 - BASE_MEM_MIB - NUMWORKERS / WORKERS_PER_MIB))
+		if [ $((STREAMS * PART_MIB * (CONCURRENCY + 1))) -gt "$budget" ]; then
+			m=$((budget / (STREAMS * PART_MIB) - 1))
+			if [ "$m" -lt 1 ]; then
+				printf '  not enough memory for %s stdin upload(s) with %s MiB parts even at --concurrency 1: use fewer streams or add memory\n' "$STREAMS" "$PART_MIB"
+				return
+			fi
+			printf '  (--concurrency lowered from %s to %s to fit the memory)\n' "$CONCURRENCY" "$m"
+			conc=$m
+		fi
+	fi
 	if is_uint "$EFF_FD"; then
-		fit=$(((EFF_FD - FD_MARGIN) / (CONCURRENCY + 1)))
+		fit=$(((EFF_FD - FD_MARGIN) / (conc + 1)))
 		if [ "$fit" -lt 2 ]; then
 			printf '  the open file limit (%s) is too low for any useful setting, raise it first (see the fix line)\n' "$EFF_FD"
 			return
@@ -600,7 +622,7 @@ suggest() {
 			nw=$fit
 		fi
 	fi
-	printf '  s5cmd --numworkers %s cp --concurrency %s --part-size %s SOURCE DESTINATION\n' "$nw" "$CONCURRENCY" "$PART_MIB"
+	printf '  s5cmd --numworkers %s cp --concurrency %s --part-size %s SOURCE DESTINATION\n' "$nw" "$conc" "$PART_MIB"
 }
 
 printf '\n'
