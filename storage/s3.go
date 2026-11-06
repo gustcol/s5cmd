@@ -1308,6 +1308,9 @@ func (sc *SessionCache) newSession(ctx context.Context, opts Options) (*session.
 	}
 
 	awsCfg.Retryer = newCustomRetryer(opts.MaxRetries)
+	if opts.NoContentMD5 {
+		awsCfg = awsCfg.WithS3DisableContentMD5Validation(true)
+	}
 
 	useSharedConfig := session.SharedConfigEnable
 	{
@@ -1343,6 +1346,9 @@ func (sc *SessionCache) newSession(ctx context.Context, opts Options) (*session.
 	if multi != nil {
 		multi.adoptSDKTLS(probe)
 		sess.Config.HTTPClient = &http.Client{Transport: multi}
+	}
+	if opts.UnsignedPayload {
+		sess.Handlers.Build.PushFront(unsignedPayload)
 	}
 	sess.Handlers.Complete.PushBack(protocolLogger(opts))
 
@@ -1626,4 +1632,21 @@ func (cd *CsvDecoder) Decode() ([]byte, error) {
 		result = append(result, []byte(str)...)
 	}
 	return result, nil
+}
+
+// unsignedPayload marks the body of uploads as not part of the signature. The
+// SDK otherwise reads every part once just to hash it, before the first byte
+// is sent. The header has to be in place before the SDK's own body hashing
+// handler runs, which skips the hash when the header is already set.
+//
+// Plain HTTP requests are left alone: without TLS the hash is the only thing
+// that ties the signature to the body.
+func unsignedPayload(r *request.Request) {
+	if r.HTTPRequest == nil || r.HTTPRequest.URL.Scheme != "https" {
+		return
+	}
+	switch r.Operation.Name {
+	case "PutObject", "UploadPart":
+		r.HTTPRequest.Header.Set("X-Amz-Content-Sha256", "UNSIGNED-PAYLOAD")
+	}
 }

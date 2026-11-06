@@ -76,6 +76,14 @@ var app = &cli.App{
 			EnvVars: []string{"S5CMD_TRANSPORT_CONNS"},
 			Usage:   "number of independent HTTP/2 connections that requests are spread over (default 8, only used with --transport http2)",
 		},
+		&cli.BoolFlag{
+			Name:  "unsigned-payload",
+			Usage: "do not hash the body of uploads for the request signature (https endpoints only, the body is protected by TLS)",
+		},
+		&cli.BoolFlag{
+			Name:  "no-content-md5",
+			Usage: "do not send a Content-MD5 header with uploads, so the server does not check the body against it",
+		},
 		&cli.GenericFlag{
 			Name: "log",
 			Value: &EnumValue{
@@ -236,6 +244,8 @@ func NewStorageOpts(c *cli.Context) storage.Options {
 		ClientKey:              c.String("client-key"),
 		Transport:              c.String("transport"),
 		TransportConns:         c.Int("transport-conns"),
+		UnsignedPayload:        c.Bool("unsigned-payload"),
+		NoContentMD5:           c.Bool("no-content-md5"),
 		RequestPayer:           c.String("request-payer"),
 		UseListObjectsV1:       c.Bool("use-list-objects-v1"),
 		Profile:                c.String("profile"),

@@ -75,6 +75,8 @@ func NewRemoteClient(ctx context.Context, url *url.URL, opts Options) (*S3, erro
 		ClientKey:              opts.ClientKey,
 		Transport:              opts.Transport,
 		TransportConns:         opts.TransportConns,
+		UnsignedPayload:        opts.UnsignedPayload,
+		NoContentMD5:           opts.NoContentMD5,
 		bucket:                 url.Bucket,
 		region:                 opts.region,
 	}
@@ -106,6 +108,8 @@ type Options struct {
 	ClientCert             string // PEM client certificate for mutual TLS
 	ClientKey              string // PEM private key of ClientCert
 	TransportConns         int    // independent connections for http2; 0 means the default
+	UnsignedPayload        bool   // do not hash and sign request bodies over https
+	NoContentMD5           bool   // do not send Content-MD5 with uploaded parts
 	Transport              string // auto, http1, http2 or http3; empty means auto
 	bucket                 string
 	region                 string
