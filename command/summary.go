@@ -154,15 +154,18 @@ func (t *tally) counts() summaryCounts {
 
 // summaryReport is the content of the --summary-json file.
 type summaryReport struct {
-	Command         string        `json:"command"`
-	StartedAt       time.Time     `json:"started_at"`
-	FinishedAt      time.Time     `json:"finished_at"`
-	DurationSeconds float64       `json:"duration_seconds"`
-	Success         bool          `json:"success"`
-	Copied          summaryCounts `json:"copied"`
-	Skipped         summaryCounts `json:"skipped"`
-	Failed          summaryCounts `json:"failed"`
-	Deleted         summaryCounts `json:"deleted"`
+	Command         string    `json:"command"`
+	StartedAt       time.Time `json:"started_at"`
+	FinishedAt      time.Time `json:"finished_at"`
+	DurationSeconds float64   `json:"duration_seconds"`
+	Success         bool      `json:"success"`
+	// Canceled is true when the command was interrupted or its context was
+	// canceled. Success is false then, and Failed does not count it.
+	Canceled bool          `json:"canceled"`
+	Copied   summaryCounts `json:"copied"`
+	Skipped  summaryCounts `json:"skipped"`
+	Failed   summaryCounts `json:"failed"`
+	Deleted  summaryCounts `json:"deleted"`
 	// ThroughputBytesPerSecond is the copied bytes over the duration of the
 	// command.
 	ThroughputBytesPerSecond float64 `json:"throughput_bytes_per_second"`
@@ -196,6 +199,7 @@ func (s *jobSummary) report(finished time.Time, cmdErr error) summaryReport {
 		FinishedAt:               finished.UTC(),
 		DurationSeconds:          duration.Seconds(),
 		Success:                  cmdErr == nil && failed.Count == 0,
+		Canceled:                 cmdErr != nil && errorpkg.IsCancelation(cmdErr),
 		Copied:                   copied,
 		Skipped:                  s.skipped.counts(),
 		Failed:                   failed,

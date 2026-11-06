@@ -920,6 +920,15 @@ func (c Copy) doCopy(ctx context.Context, srcurl, dsturl *url.URL, extradata map
 		return err
 	}
 
+	if size == 0 && activeSummary.Load() != nil {
+		// objects given by name are not listed, so their size is unknown.
+		if srcClient, err := storage.NewRemoteClient(ctx, srcurl, c.storageOpts); err == nil {
+			if obj, err := srcClient.Stat(ctx, srcurl); err == nil {
+				size = obj.Size
+			}
+		}
+	}
+
 	err = dstClient.Copy(ctx, srcurl, dsturl, metadata)
 	if err != nil {
 		return err

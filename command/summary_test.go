@@ -192,3 +192,14 @@ func TestValidateSummaryPath(t *testing.T) {
 	entries, _ := os.ReadDir(dir)
 	assert.Equal(t, len(entries), 0)
 }
+
+func TestSummaryReportMarksCanceled(t *testing.T) {
+	s := &jobSummary{command: "cp", startedAt: time.Now()}
+	r := s.report(time.Now(), ctxCanceled())
+	assert.Assert(t, r.Canceled)
+	assert.Assert(t, !r.Success)
+	assert.Equal(t, r.Failed.Count, int64(0))
+
+	r = s.report(time.Now(), nil)
+	assert.Assert(t, !r.Canceled && r.Success)
+}
