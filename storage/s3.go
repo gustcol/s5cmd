@@ -1308,9 +1308,6 @@ func (sc *SessionCache) newSession(ctx context.Context, opts Options) (*session.
 	}
 
 	awsCfg.Retryer = newCustomRetryer(opts.MaxRetries)
-	if opts.NoContentMD5 {
-		awsCfg = awsCfg.WithS3DisableContentMD5Validation(true)
-	}
 
 	useSharedConfig := session.SharedConfigEnable
 	{
@@ -1349,6 +1346,9 @@ func (sc *SessionCache) newSession(ctx context.Context, opts Options) (*session.
 	}
 	if opts.UnsignedPayload {
 		sess.Handlers.Build.PushFront(unsignedPayload)
+	}
+	if opts.NoContentMD5 {
+		sess.Handlers.Build.PushFront(noContentMD5)
 	}
 	sess.Handlers.Complete.PushBack(protocolLogger(opts))
 
@@ -1639,6 +1639,17 @@ func (cd *CsvDecoder) Decode() ([]byte, error) {
 		result = append(result, []byte(str)...)
 	}
 	return result, nil
+}
+
+// noContentMD5 turns off the Content-MD5 header for uploads only. The SDK
+// option is session wide, but S3 requires Content-MD5 for DeleteObjects and a
+// few other operations. r.Config is a copy for this request, and the body
+// hashes are computed later in the Build phase.
+func noContentMD5(r *request.Request) {
+	switch r.Operation.Name {
+	case "PutObject", "UploadPart":
+		r.Config.S3DisableContentMD5Validation = aws.Bool(true)
+	}
 }
 
 // unsignedPayload marks the body of uploads as not part of the signature. The
