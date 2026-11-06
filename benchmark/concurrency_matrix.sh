@@ -60,7 +60,7 @@ else
 fi
 cleanup_workdir=${BENCH_WORKDIR:+no}
 cleanup() {
-	"$S5CMD_BIN" --log error rm "s3://$BENCH_BUCKET/$BENCH_PREFIX/*" >/dev/null 2>&1 || true
+	"$S5CMD_BIN" --log error rm "s3://$BENCH_BUCKET/${BENCH_PREFIX:?}/*" >/dev/null 2>&1 || true
 	if [[ -z $cleanup_workdir ]]; then
 		rm -rf "$workdir"
 	else
@@ -85,7 +85,7 @@ make_files() {
 }
 
 remote_clear() {
-	"$S5CMD_BIN" --log error rm "s3://$BENCH_BUCKET/$BENCH_PREFIX/$1/*" >/dev/null 2>&1 || true
+	"$S5CMD_BIN" --log error rm "s3://$BENCH_BUCKET/${BENCH_PREFIX:?}/$1/*" >/dev/null 2>&1 || true
 }
 
 # measure SCENARIO OP COUNT TOTAL_KIB WORKERS CONCURRENCY -- s5cmd args...
@@ -126,7 +126,7 @@ for scenario in $SCENARIOS; do
 	for w in $WORKERS; do
 		for c in $CONCURRENCY; do
 			echo "scenario=$scenario numworkers=$w concurrency=$c" >&2
-			remote="$BENCH_PREFIX/$scenario"
+			remote="${BENCH_PREFIX:?}/$scenario"
 
 			remote_clear "$scenario"
 			measure "$scenario" upload "$count" "$total_kib" "$w" "$c" -- \
