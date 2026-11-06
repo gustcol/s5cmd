@@ -1216,6 +1216,10 @@ func validateCopyCommand(c *cli.Context) error {
 		return fmt.Errorf("expected source and destination arguments")
 	}
 
+	if err := validateSummaryPath(c); err != nil {
+		return err
+	}
+
 	ctx := c.Context
 	src := c.Args().Get(0)
 	dst := c.Args().Get(1)

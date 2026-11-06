@@ -237,6 +237,28 @@ func startSummary(c *cli.Context, err *error) func() {
 	}
 }
 
+// validateSummaryPath checks, before the command starts, that the summary
+// file can be created: a transfer that runs for hours should not find out at
+// the end that the directory is missing. The file itself is only touched when
+// the command ends.
+func validateSummaryPath(c *cli.Context) error {
+	path := c.String("summary-json")
+	if path == "" {
+		return nil
+	}
+	if fi, err := os.Stat(path); err == nil && fi.IsDir() {
+		return fmt.Errorf("--summary-json: %q is a directory", path)
+	}
+	dir := filepath.Dir(path)
+	f, err := os.CreateTemp(dir, "."+filepath.Base(path)+".*")
+	if err != nil {
+		return fmt.Errorf("--summary-json: cannot create a file in %q: %w", dir, errors.Unwrap(err))
+	}
+	f.Close()
+	os.Remove(f.Name())
+	return nil
+}
+
 // writeSummary writes the report to path. The file is written to a temporary
 // file in the same directory and renamed, so a reader never sees half of it.
 func writeSummary(path string, r summaryReport) error {

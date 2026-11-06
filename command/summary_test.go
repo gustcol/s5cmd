@@ -179,3 +179,16 @@ func flagSetFor(t *testing.T, cmd *cli.Command, args []string) *flag.FlagSet {
 	assert.NilError(t, set.Parse(args))
 	return set
 }
+
+func TestValidateSummaryPath(t *testing.T) {
+	dir := t.TempDir()
+
+	assert.NilError(t, validateSummaryPath(newSummaryContext(t)))
+	assert.NilError(t, validateSummaryPath(newSummaryContext(t, "--summary-json", filepath.Join(dir, "ok.json"))))
+	assert.ErrorContains(t, validateSummaryPath(newSummaryContext(t, "--summary-json", filepath.Join(dir, "missing", "s.json"))), "cannot create a file")
+	assert.ErrorContains(t, validateSummaryPath(newSummaryContext(t, "--summary-json", dir)), "is a directory")
+
+	// nothing is left behind
+	entries, _ := os.ReadDir(dir)
+	assert.Equal(t, len(entries), 0)
+}

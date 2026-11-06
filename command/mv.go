@@ -50,6 +50,7 @@ func NewMoveCommand() *cli.Command {
 		},
 		Action: func(c *cli.Context) (err error) {
 			defer stat.Collect(c.Command.FullName(), &err)()
+			defer startSummary(c, &err)()
 
 			// delete source
 			copy, err := NewCopy(c, true)

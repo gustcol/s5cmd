@@ -280,6 +280,10 @@ func validateRMCommand(c *cli.Context) error {
 		return fmt.Errorf("expected at least 1 object to remove")
 	}
 
+	if err := validateSummaryPath(c); err != nil {
+		return err
+	}
+
 	// It might be a reasonable request too. Consider that user wants to delete
 	// all-versions of "a" and "b", but want to delete only a single
 	// version of "c" "someversion". User might want to express this as

@@ -186,3 +186,39 @@ func TestSummaryJSONDoesNotChangeJSONOutput(t *testing.T) {
 	assert.Equal(t, with.Stdout(), without.Stdout())
 	assert.Equal(t, readSummary(t, summary).Copied, counts{1, 5})
 }
+
+func TestSummaryJSONMove(t *testing.T) {
+	t.Parallel()
+
+	s3client, s5cmd := setup(t)
+	bucket := s3BucketFromTestName(t)
+	createBucket(t, s3client, bucket)
+
+	workdir := fs.NewDir(t, bucket, fs.WithFile("a.txt", "12345"))
+	defer workdir.Remove()
+	summary := filepath.Join(t.TempDir(), "mv.json")
+
+	icmd.RunCmd(s5cmd("mv", "--summary-json", summary, filepath.ToSlash(workdir.Join("a.txt")), fmt.Sprintf("s3://%v/", bucket))).Assert(t, icmd.Success)
+	s := readSummary(t, summary)
+	assert.Equal(t, s.Command, "mv")
+	assert.Assert(t, s.Success)
+	assert.Equal(t, s.Copied, counts{1, 5})
+}
+
+func TestSummaryJSONUnwritablePathFailsBeforeTransfer(t *testing.T) {
+	t.Parallel()
+
+	s3client, s5cmd := setup(t)
+	bucket := s3BucketFromTestName(t)
+	createBucket(t, s3client, bucket)
+
+	workdir := fs.NewDir(t, bucket, fs.WithFile("a.txt", "12345"))
+	defer workdir.Remove()
+	summary := filepath.Join(t.TempDir(), "missing", "s.json")
+
+	result := icmd.RunCmd(s5cmd("cp", "--summary-json", summary, filepath.ToSlash(workdir.Join("a.txt")), fmt.Sprintf("s3://%v/", bucket)))
+	result.Assert(t, icmd.Expected{ExitCode: 1})
+	assert.Assert(t, strings.Contains(result.Stderr(), "--summary-json"), result.Stderr())
+	// nothing was uploaded.
+	icmd.RunCmd(s5cmd("ls", fmt.Sprintf("s3://%v/", bucket))).Assert(t, icmd.Expected{ExitCode: 0, Out: ""})
+}
