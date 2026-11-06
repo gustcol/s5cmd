@@ -20,22 +20,17 @@ const (
 	TransportAuto  = "auto"
 	TransportHTTP1 = "http1"
 	TransportHTTP2 = "http2"
-	TransportHTTP3 = "http3"
 )
 
-// TransportModes lists the values accepted by --transport. http3 is always
-// listed, but only works in builds made with the http3 build tag.
-var TransportModes = []string{TransportAuto, TransportHTTP1, TransportHTTP2, TransportHTTP3}
-
-// errNoHTTP3 is returned by builds without HTTP/3 support.
-var errNoHTTP3 = errors.New("this build has no HTTP/3 support")
+// TransportModes lists the values accepted by --transport.
+var TransportModes = []string{TransportAuto, TransportHTTP1, TransportHTTP2}
 
 func validTransport(mode string) error {
 	switch mode {
-	case "", TransportAuto, TransportHTTP1, TransportHTTP2, TransportHTTP3:
+	case "", TransportAuto, TransportHTTP1, TransportHTTP2:
 		return nil
 	}
-	return fmt.Errorf("invalid transport %q, allowed values: auto, http1, http2, http3", mode)
+	return fmt.Errorf("invalid transport %q, allowed values: auto, http1, http2", mode)
 }
 
 // tlsConfig builds the TLS configuration from the TLS related options. It
@@ -135,9 +130,6 @@ func requireH2(cfg *tls.Config) *tls.Config {
 	}
 	return cfg
 }
-
-// newHTTP3RoundTripper is provided by transport_http3.go in builds with the
-// http3 tag and by transport_nohttp3.go otherwise.
 
 // protocolLogger logs the protocol negotiated by the first response of each
 // kind (HTTP/1.1, HTTP/2.0). With an explicit --transport it is a debug

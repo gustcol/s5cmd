@@ -1474,14 +1474,6 @@ func newHTTPClient(opts Options) (*http.Client, error) {
 		return nil, err
 	}
 
-	if opts.Transport == TransportHTTP3 {
-		rt, err := newHTTP3RoundTripper(tlsCfg, opts)
-		if err != nil {
-			return nil, err
-		}
-		return &http.Client{Transport: rt}, nil
-	}
-
 	conns := transportConns(opts)
 
 	custom := tlsCfg != nil || opts.ConnPoolSize > 0 ||

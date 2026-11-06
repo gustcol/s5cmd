@@ -188,11 +188,10 @@ S5CMD_TRANSPORT=http2 s5cmd cp 's3://bucket/*' .
 - `--ca-cert FILE`: PEM bundle of trusted CAs. It **replaces** the system root pool, the same way `AWS_CA_BUNDLE` and `curl --cacert` do. If `AWS_CA_BUNDLE` (or `ca_bundle` in the shared AWS config) is also set, `--ca-cert` wins. Without `--ca-cert`, `AWS_CA_BUNDLE` is honored as the AWS SDK does.
 - `--client-cert FILE` and `--client-key FILE`: PEM client certificate and key for mutual TLS. Both are required together. The SDK variables `AWS_SDK_GO_CLIENT_TLS_CERT` and `AWS_SDK_GO_CLIENT_TLS_KEY` still work; if both they and the flags are set, the flag certificate is offered first.
 - `--no-verify-ssl` still turns off server certificate verification, whatever the other options say.
-- `--transport auto|http1|http2|http3` (env `S5CMD_TRANSPORT`):
+- `--transport auto|http1|http2` (env `S5CMD_TRANSPORT`):
   - `auto` (default): HTTP/1.1. Go would otherwise send every request over one HTTP/2 connection whenever a TLS front end such as Caddy or nginx offers h2, which made a 4 GiB download about 5 times slower in our tests. AWS S3 only speaks HTTP/1.1, so nothing changes there.
   - `http1`: HTTP/1.1 only. Parallelism comes from many TCP connections, sized by `--numworkers` x `--concurrency`.
   - `http2`: HTTP/2 only. The request fails if the server does not negotiate `h2`. Requests are spread over `--transport-conns` connections (see below).
-  - `http3`: only in builds made with `-tags http3`. The default build prints `this build has no HTTP/3 support`.
   - The negotiated protocol (`HTTP/1.1` or `HTTP/2.0`) is logged once per protocol: with `--log debug` when `--transport` is set explicitly, and with `--log trace` for `auto`.
 
 #### Upload options: `--unsigned-payload` and `--no-content-md5`

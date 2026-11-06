@@ -110,7 +110,7 @@ type Options struct {
 	TransportConns         int    // independent connections for http2; 0 means the default
 	UnsignedPayload        bool   // do not hash and sign request bodies over https
 	NoContentMD5           bool   // do not send Content-MD5 with uploaded parts
-	Transport              string // auto, http1, http2 or http3; empty means auto
+	Transport              string // auto, http1 or http2; empty means auto
 	bucket                 string
 	region                 string
 }

@@ -198,11 +198,6 @@ func TestTransportFlag(t *testing.T) {
 		icmd.RunCmd(cmd).Assert(t, icmd.Success)
 	})
 
-	t.Run("http3 needs a build with support", func(t *testing.T) {
-		res := tlsS5cmd(t, f, "--ca-cert", f.caFile, "--transport", "http3", "ls", "s3://bucket")
-		res.Assert(t, icmd.Expected{ExitCode: 1, Err: "HTTP/3"})
-	})
-
 	t.Run("unknown value", func(t *testing.T) {
 		res := tlsS5cmd(t, f, "--transport", "spdy", "ls", "s3://bucket")
 		res.Assert(t, icmd.Expected{ExitCode: 1, Err: "allowed values"})

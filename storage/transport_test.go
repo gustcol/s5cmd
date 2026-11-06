@@ -196,12 +196,8 @@ func TestNewHTTPClientTransportValidation(t *testing.T) {
 	if _, err := newHTTPClient(Options{Transport: "spdy"}); err == nil {
 		t.Error("expected an error for an unknown transport")
 	}
-	_, err := newHTTPClient(Options{Transport: TransportHTTP3})
-	if err == nil {
-		t.Fatal("http3 must fail until a build provides it")
-	}
-	if !strings.Contains(err.Error(), "HTTP/3") {
-		t.Errorf("unclear http3 error: %v", err)
+	if _, err := newHTTPClient(Options{Transport: "http3"}); err == nil {
+		t.Error("http3 is not supported")
 	}
 	for _, mode := range []string{"", TransportAuto} {
 		if c, err := newHTTPClient(Options{Transport: mode}); err != nil || c != nil {
