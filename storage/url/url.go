@@ -7,7 +7,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
 	"net/url"
+	"os"
 	"path"
 	"path/filepath"
 	"regexp"
@@ -265,7 +267,71 @@ func (u *URL) JoinInside(s string) (*URL, error) {
 	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || filepath.IsAbs(rel) {
 		return nil, fmt.Errorf("%w: key %q, destination %q", ErrUnsafeLocalPath, s, u.Path)
 	}
+
+	// Directories below the destination may be symlinks that point
+	// elsewhere, which a lexical check cannot see.
+	if err := checkSymlinksInside(u.Path, clone.Path); err != nil {
+		return nil, fmt.Errorf("%w: key %q, destination %q: %v", ErrUnsafeLocalPath, s, u.Path, err)
+	}
 	return clone, nil
+}
+
+// checkSymlinksInside returns an error if, after resolving symlinks in the
+// parts of target that already exist, target is not inside base. The base
+// itself may be a symlink, since the user chose it.
+//
+// This is a check made before the file is written, not a guarantee: another
+// process that can modify the destination tree can still swap a directory for
+// a symlink in between.
+func checkSymlinksInside(base, target string) error {
+	if filepath.Clean(filepath.FromSlash(base)) == filepath.Clean(filepath.FromSlash(target)) {
+		return nil
+	}
+	resolvedBase, err := resolveExisting(filepath.FromSlash(base))
+	if err != nil {
+		return err
+	}
+	// the last element is replaced when it is a symlink, not followed, so
+	// only its parent is resolved.
+	target = filepath.FromSlash(target)
+	resolvedTarget, err := resolveExisting(filepath.Dir(target))
+	if err != nil {
+		return err
+	}
+	resolvedTarget = filepath.Join(resolvedTarget, filepath.Base(target))
+	rel, err := filepath.Rel(resolvedBase, resolvedTarget)
+	if err != nil || !filepath.IsLocal(rel) {
+		return fmt.Errorf("path resolves to %q, outside %q", resolvedTarget, resolvedBase)
+	}
+	return nil
+}
+
+// resolveExisting resolves symlinks in the longest existing prefix of p and
+// appends the rest, which does not exist yet.
+func resolveExisting(p string) (string, error) {
+	p, err := filepath.Abs(p)
+	if err != nil {
+		return "", err
+	}
+	rest := ""
+	for cur := p; ; {
+		if _, err := os.Lstat(cur); err == nil {
+			resolved, err := filepath.EvalSymlinks(cur)
+			if err != nil {
+				// for example a dangling symlink
+				return "", err
+			}
+			return filepath.Join(resolved, rest), nil
+		} else if !errors.Is(err, fs.ErrNotExist) {
+			return "", err
+		}
+		parent := filepath.Dir(cur)
+		if parent == cur {
+			return p, nil
+		}
+		rest = filepath.Join(filepath.Base(cur), rest)
+		cur = parent
+	}
 }
 
 // Join joins string and returns new URL.

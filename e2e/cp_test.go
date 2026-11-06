@@ -4897,3 +4897,37 @@ func TestCopyS3WildcardToLocalStillWorks(t *testing.T) {
 	)
 	assert.Assert(t, fs.Equal(workdir.Path(), expected))
 }
+
+// A directory inside the destination that is a symlink to somewhere else must
+// not be followed when downloading, otherwise a key like "linkdir/pwned"
+// writes outside the destination.
+func TestCopyS3ObjectsToLocalDoesNotFollowDestinationDirectorySymlink(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("creating symlinks needs extra privileges on Windows")
+	}
+	t.Parallel()
+
+	s3client, s5cmd := setup(t)
+
+	bucket := s3BucketFromTestName(t)
+	createBucket(t, s3client, bucket)
+	putFile(t, s3client, bucket, "ok.txt", "ok")
+	putFile(t, s3client, bucket, "linkdir/pwned", "pwned")
+
+	parent := fs.NewDir(t, "parent",
+		fs.WithDir("dst"),
+		fs.WithDir("outside"),
+	)
+	defer parent.Remove()
+	assert.NilError(t, os.Symlink(filepath.Join(parent.Path(), "outside"), filepath.Join(parent.Path(), "dst", "linkdir")))
+
+	dst := filepath.ToSlash(filepath.Join(parent.Path(), "dst")) + "/"
+	for _, command := range []string{"cp", "sync"} {
+		result := icmd.RunCmd(s5cmd(command, fmt.Sprintf("s3://%v/*", bucket), dst))
+		result.Assert(t, icmd.Expected{ExitCode: 1})
+		assert.Assert(t, strings.Contains(result.Stderr(), "outside the destination"), result.Stderr())
+
+		_, err := os.Stat(filepath.Join(parent.Path(), "outside", "pwned"))
+		assert.Assert(t, os.IsNotExist(err), "file was written through the symlink")
+	}
+}

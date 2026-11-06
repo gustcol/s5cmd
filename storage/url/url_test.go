@@ -3,6 +3,7 @@ package url
 import (
 	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 	"reflect"
 	"regexp"
@@ -755,6 +756,73 @@ func TestJoinInside(t *testing.T) {
 			}
 			if got.Path != tc.want {
 				t.Errorf("got %q, want %q", got.Path, tc.want)
+			}
+		})
+	}
+}
+
+func TestJoinInsideRefusesSymlinkedDirectories(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	dest := filepath.Join(root, "dst")
+	outside := filepath.Join(root, "outside")
+	inside := filepath.Join(dest, "real")
+	for _, d := range []string{dest, outside, inside} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.Symlink(outside, filepath.Join(dest, "linkout")); err != nil {
+		t.Skipf("cannot create symlinks: %v", err)
+	}
+	if err := os.Symlink(inside, filepath.Join(dest, "linkin")); err != nil {
+		t.Skipf("cannot create symlinks: %v", err)
+	}
+	if err := os.Symlink(filepath.Join(root, "missing"), filepath.Join(dest, "dangling")); err != nil {
+		t.Skipf("cannot create symlinks: %v", err)
+	}
+	// the destination itself may be a symlink.
+	link := filepath.Join(root, "destlink")
+	if err := os.Symlink(dest, link); err != nil {
+		t.Skipf("cannot create symlinks: %v", err)
+	}
+
+	testcases := []struct {
+		base   string
+		key    string
+		unsafe bool
+	}{
+		{base: dest, key: "linkout/pwned", unsafe: true},
+		{base: dest, key: "linkout/sub/pwned", unsafe: true},
+		{base: dest, key: "dangling/pwned", unsafe: true},
+		{base: dest, key: "linkin/ok.txt"},
+		{base: dest, key: "real/ok.txt"},
+		{base: dest, key: "new/dir/ok.txt"},
+		// a symlink as the last element is replaced, not followed.
+		{base: dest, key: "linkout"},
+		{base: link, key: "real/ok.txt"},
+		{base: link, key: "linkout/pwned", unsafe: true},
+	}
+
+	for _, tc := range testcases {
+		tc := tc
+		t.Run(filepath.Base(tc.base)+"+"+tc.key, func(t *testing.T) {
+			t.Parallel()
+
+			u, err := New(filepath.ToSlash(tc.base))
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, err = u.JoinInside(tc.key)
+			if tc.unsafe {
+				if !errors.Is(err, ErrUnsafeLocalPath) {
+					t.Fatalf("expected ErrUnsafeLocalPath, got %v", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
 			}
 		})
 	}
