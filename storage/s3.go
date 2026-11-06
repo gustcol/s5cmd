@@ -1516,6 +1516,13 @@ func newTransport(opts Options, tlsCfg *tls.Config) *http.Transport {
 		}
 	}
 
+	// Once http.DefaultTransport has been used, its clone carries a TLS config
+	// that offers h2 and a matching TLSNextProto entry. The SDK later adds the
+	// CA bundle (AWS_CA_BUNDLE) to that config, so the server would pick
+	// HTTP/2 for a transport that is set to HTTP/1.1. Start from clean TLS
+	// state instead.
+	transport.TLSClientConfig = nil
+	transport.TLSNextProto = nil
 	if tlsCfg != nil {
 		transport.TLSClientConfig = tlsCfg
 	}

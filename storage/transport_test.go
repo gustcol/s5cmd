@@ -480,3 +480,53 @@ func TestTransportConnsClientCertFromEnv(t *testing.T) {
 		t.Error("transports must share one TLS config")
 	}
 }
+
+// With AWS_CA_BUNDLE and nothing else set, the SDK adds the CA to the
+// TLSClientConfig of our transport. The transport must not carry over the
+// "h2" ALPN entry that http.DefaultTransport gets once it has been used, or
+// the server picks HTTP/2 and an HTTP/1.1 transport cannot read the answer.
+func TestHTTP1WithAWSCABundleFromEnv(t *testing.T) {
+	pki := newTestPKI(t)
+	srv := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(r.Proto))
+	}))
+	srv.EnableHTTP2 = true
+	srv.TLS = &tls.Config{Certificates: []tls.Certificate{pki.serverCert}}
+	srv.StartTLS()
+	t.Cleanup(srv.Close)
+
+	// Using the default transport once makes it add h2 to its TLS config.
+	if resp, err := http.DefaultClient.Get(srv.URL); err == nil {
+		resp.Body.Close()
+	}
+
+	t.Setenv("AWS_SDK_LOAD_CONFIG", "0")
+	t.Setenv("AWS_SHARED_CREDENTIALS_FILE", filepath.Join(t.TempDir(), "none"))
+	t.Setenv("AWS_CA_BUNDLE", pki.caFile)
+	t.Setenv("AWS_SDK_GO_CLIENT_TLS_CERT", "")
+	t.Setenv("AWS_SDK_GO_CLIENT_TLS_KEY", "")
+
+	for _, mode := range []string{"", TransportAuto, TransportHTTP1} {
+		t.Run("mode="+mode, func(t *testing.T) {
+			sc := &SessionCache{sessions: map[Options]*session.Session{}}
+			sess, err := sc.newSession(context.Background(), Options{
+				Endpoint:     srv.URL,
+				Transport:    mode,
+				ConnPoolSize: 8,
+				LogLevel:     log.LevelError,
+				region:       "us-east-1",
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			resp, err := sess.Config.HTTPClient.Get(srv.URL)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer resp.Body.Close()
+			if resp.Proto != "HTTP/1.1" {
+				t.Errorf("protocol = %s, want HTTP/1.1", resp.Proto)
+			}
+		})
+	}
+}
