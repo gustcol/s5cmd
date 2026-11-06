@@ -153,10 +153,8 @@ fi
 OS=$(uname -s 2>/dev/null || echo unknown)
 FAILS=0
 WARNS=0
-# Filled in by the checks, used for the suggested command at the end.
+# Set by check_open_files, used for the suggested command at the end.
 EFF_FD=
-PORT_SPAN=
-AVAIL_MIB=
 
 # emit LEVEL NAME MESSAGE [FIX]
 emit() {
@@ -345,7 +343,6 @@ check_ports() {
 	lo=$1
 	hi=$2
 	span=$((hi - lo + 1))
-	PORT_SPAN=$span
 	desc="net.ipv4.ip_local_port_range $lo $hi = $span ports, needed: $CONNS (x2 headroom: $((CONNS * 2)))"
 	# Widest useful range: 1024 to 65535 (below 1024 are privileged ports).
 	newrange_lo=$((65536 - CONNS * 2))
@@ -507,7 +504,6 @@ check_memory() {
 		return
 	fi
 	avail_mib=$((avail_kib / 1024))
-	AVAIL_MIB=$avail_mib
 	desc="available ${avail_mib} MiB, estimated need $est_mib MiB ($base_mib base + $STREAMS stdin upload(s) x $PART_MIB MiB x $((CONCURRENCY + 1)) buffers)${note:-}"
 	if [ "$avail_mib" -lt "$est_mib" ]; then
 		emit FAIL memory "$desc" "lower --part-size or --concurrency, or run fewer stdin uploads at once"
@@ -580,47 +576,34 @@ check_memory
 check_cpu
 
 # ---------------------------------------------------------------------------
-# Suggested command. Keeps --concurrency and lowers --numworkers until the
-# descriptors (workers x (concurrency + 1) + margin, from the formula above)
-# and the ports (2 x workers x concurrency) fit. If memory is short, lowers
-# --part-size so that the stdin buffers use at most half of the available
-# memory. The limits are the ones read above; nothing is changed.
+# Suggested command.
+#
+# Only the open file limit maps to an s5cmd flag. Each worker can hold one
+# local file and up to --concurrency connections, so the limit allows
+#   fit = (effective limit - FD_MARGIN) / (concurrency + 1)
+# workers (same formula as FD_NEED above). The other limits have a fix that
+# changes the machine instead: ports and socket buffers are sysctls, and
+# memory only depends on stdin uploads, so none of them is turned into a
+# different flag value here. Nothing is changed by this script.
 # ---------------------------------------------------------------------------
 suggest() {
 	nw=$NUMWORKERS
-	ps=$PART_MIB
-	if is_uint "$EFF_FD" && [ "$FD_NEED" -gt "$EFF_FD" ]; then
-		m=$(((EFF_FD - FD_MARGIN) / (CONCURRENCY + 1)))
-		[ "$m" -lt "$nw" ] && nw=$m
-	fi
-	if is_uint "$PORT_SPAN" && [ "$CONNS" -gt $((PORT_SPAN / 2)) ]; then
-		m=$((PORT_SPAN / 2 / CONCURRENCY))
-		[ "$m" -lt "$nw" ] && nw=$m
-	fi
-	if [ "$nw" -lt 1 ]; then
-		printf 'Suggested: the limits are too low even for --numworkers 1; raise them first (see the fix lines).\n'
-		return
-	fi
-	if is_uint "$AVAIL_MIB"; then
-		base=$((BASE_MEM_MIB + nw / WORKERS_PER_MIB))
-		budget=$((AVAIL_MIB / 2 - base))
-		if [ "$((STREAMS * PART_MIB * (CONCURRENCY + 1)))" -gt "$budget" ]; then
-			m=$((budget / (STREAMS * (CONCURRENCY + 1))))
-			# 5 MiB is the smallest part S3 accepts.
-			[ "$m" -lt 5 ] && m=5
-			ps=$m
+	printf 'Suggested command for these settings:\n'
+	if is_uint "$EFF_FD"; then
+		fit=$(((EFF_FD - FD_MARGIN) / (CONCURRENCY + 1)))
+		if [ "$fit" -lt 2 ]; then
+			printf '  the open file limit (%s) is too low for any useful setting, raise it first (see the fix line)\n' "$EFF_FD"
+			return
+		fi
+		if [ "$fit" -lt "$nw" ]; then
+			printf '  (--numworkers lowered from %s to %s to fit the open file limit)\n' "$nw" "$fit"
+			nw=$fit
 		fi
 	fi
-	if [ "$nw" -eq "$NUMWORKERS" ] && [ "$ps" -eq "$PART_MIB" ]; then
-		printf 'Suggested: s5cmd --numworkers %s cp --concurrency %s --part-size %s s3://bucket/prefix/ dir/   (the settings fit this host)\n' "$nw" "$CONCURRENCY" "$ps"
-	else
-		printf 'Suggested: s5cmd --numworkers %s cp --concurrency %s --part-size %s s3://bucket/prefix/ dir/   (lowered to fit the limits above)\n' "$nw" "$CONCURRENCY" "$ps"
-	fi
-	if [ "$WARNS" -gt 0 ]; then
-		printf '           WARN lines need the sysctl fixes above to reach full speed; they do not change the numbers here.\n'
-	fi
+	printf '  s5cmd --numworkers %s cp --concurrency %s --part-size %s SOURCE DESTINATION\n' "$nw" "$CONCURRENCY" "$PART_MIB"
 }
 
-printf '\n%s FAIL, %s WARN\n' "$FAILS" "$WARNS"
+printf '\n'
 suggest
+printf '\n%s FAIL, %s WARN\n' "$FAILS" "$WARNS"
 [ "$FAILS" -eq 0 ]
