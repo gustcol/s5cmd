@@ -153,7 +153,15 @@ func TestStartSummaryNestedDoesNotReplace(t *testing.T) {
 	outer := resetSummary(t)
 	path := filepath.Join(t.TempDir(), "inner.json")
 	var err error
+	var warned []string
+	old := summaryDropped
+	summaryDropped = func(_, _, p string) { warned = append(warned, p) }
+	defer func() { summaryDropped = old }()
 	startSummary(newSummaryContext(t, "--summary-json", path), &err)()
+	assert.DeepEqual(t, warned, []string{path})
+	// without the flag there is nothing to warn about.
+	startSummary(newSummaryContext(t), &err)()
+	assert.Equal(t, len(warned), 1)
 	assert.Assert(t, activeSummary.Load() == outer)
 	_, serr := os.Stat(path)
 	assert.Assert(t, os.IsNotExist(serr))

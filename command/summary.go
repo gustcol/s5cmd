@@ -211,6 +211,12 @@ func (s *jobSummary) report(finished time.Time, cmdErr error) summaryReport {
 	}
 }
 
+// summaryDropped reports that a --summary-json was ignored. It is a variable
+// so that tests can see it.
+var summaryDropped = func(command, op, path string) {
+	printWarning(command, op, fmt.Sprintf("--summary-json %q is ignored: another command of this run already collects the summary", path))
+}
+
 // startSummary starts collecting a summary when --summary-json is set. It
 // returns the function to call, with the error of the command, when the command
 // is done: that writes the file. If a summary is already being collected (a
@@ -224,6 +230,9 @@ func startSummary(c *cli.Context, err *error) func() {
 
 	s := &jobSummary{command: c.Command.Name, startedAt: time.Now()}
 	if !activeSummary.CompareAndSwap(nil, s) {
+		// in a run file the first command with --summary-json owns the
+		// summary for the whole process. Say so instead of dropping the flag.
+		summaryDropped(commandFromContext(c), c.Command.Name, path)
 		return func() {}
 	}
 

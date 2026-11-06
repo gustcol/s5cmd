@@ -574,7 +574,7 @@ If an object cannot be compared (it is encrypted with KMS or a customer key and 
 * `errors` has the first 100 error messages. `failed.count` is the number of all errors. If the command fails before it does any work (for example the bucket does not exist) the error is in the file too.
 * `canceled` is `true` when the command was interrupted (for example with Ctrl-C). `success` is `false` then, and the interruption is not counted as a failure.
 * The file is written to a temporary file and renamed. `s5cmd` checks before it starts that the file can be created, and fails right away if it cannot (missing directory, path is a directory). If it cannot be written at the end, the command fails with an error.
-* Only the command that has the flag writes a file: `sync` does not pass it to the `cp` and `rm` commands it runs, and the commands of a `run` file that carry the flag are counted in the first one that starts.
+* Only the command that has the flag writes a file: `sync` does not pass it to the `cp` and `rm` commands it runs, and in a `run` file commands run in parallel and only one summary is collected at a time: the first command that carries the flag collects it, and a command with the flag that starts while another one is collecting gets no file of its own and a warning.
 
 ### Dry run
 `--dry-run` flag will output what operations will be performed without actually
