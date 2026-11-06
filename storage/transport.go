@@ -200,7 +200,10 @@ func transportName(mode string) string {
 // connection and has its own flow-control windows.
 type roundRobinTransport struct {
 	transports []*http.Transport
-	next       atomic.Uint64
+	// probe is the HTTP/1.1 transport that the session starts with. The SDK
+	// loads its TLS settings into it and uses it for credential requests.
+	probe *http.Transport
+	next  atomic.Uint64
 }
 
 func (r *roundRobinTransport) RoundTrip(req *http.Request) (*http.Response, error) {
@@ -232,5 +235,15 @@ func (r *roundRobinTransport) adoptSDKTLS(probe *http.Transport) {
 	if sdk.RootCAs != nil {
 		cfg.RootCAs = sdk.RootCAs
 	}
-	cfg.Certificates = append(cfg.Certificates, sdk.Certificates...)
+	for _, c := range sdk.Certificates {
+		known := false
+		for _, have := range cfg.Certificates {
+			if len(have.Certificate) > 0 && len(c.Certificate) > 0 && string(have.Certificate[0]) == string(c.Certificate[0]) {
+				known = true
+			}
+		}
+		if !known {
+			cfg.Certificates = append(cfg.Certificates, c)
+		}
+	}
 }

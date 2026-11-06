@@ -1279,15 +1279,16 @@ func (sc *SessionCache) newSession(ctx context.Context, opts Options) (*session.
 	// A client that spreads requests over several transports is not a plain
 	// *http.Transport, which the SDK needs for its own TLS handling
 	// (AWS_CA_BUNDLE, ca_bundle in the shared config, client certificates).
-	// The session gets a plain probe transport for that, and the TLS settings
-	// the SDK resolves are copied to the real transports afterwards.
+	// The session gets an HTTP/1.1 probe transport for that, which is also what
+	// the credential clients use, and the TLS settings the SDK resolves are
+	// copied to the real transports afterwards.
 	var multi *roundRobinTransport
 	var probe *http.Transport
 	if httpClient != nil {
 		multi, _ = httpClient.Transport.(*roundRobinTransport)
 	}
 	if multi != nil {
-		probe = &http.Transport{}
+		probe = multi.probe
 		httpClient = &http.Client{Transport: probe}
 	}
 	awsCfg = awsCfg.
@@ -1485,11 +1486,17 @@ func newHTTPClient(opts Options) (*http.Client, error) {
 	}
 
 	if opts.Transport == TransportHTTP2 {
+		// The SDK also uses the session client for credential requests (STS,
+		// the instance metadata service), which must not be restricted to h2.
+		// They get an HTTP/1.1 probe transport with the same TLS settings.
+		probeOpts := opts
+		probeOpts.Transport = TransportHTTP1
+		var probeTLS *tls.Config
+		if tlsCfg != nil {
+			probeTLS = tlsCfg.Clone()
+		}
+		rr := &roundRobinTransport{probe: newTransport(probeOpts, probeTLS)}
 		tlsCfg = requireH2(tlsCfg)
-	}
-
-	if conns > 1 {
-		rr := &roundRobinTransport{}
 		for i := 0; i < conns; i++ {
 			rr.transports = append(rr.transports, newTransport(opts, tlsCfg))
 		}

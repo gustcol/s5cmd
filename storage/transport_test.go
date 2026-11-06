@@ -530,3 +530,83 @@ func TestHTTP1WithAWSCABundleFromEnv(t *testing.T) {
 		})
 	}
 }
+
+// The SDK uses the session client for credential requests (container
+// credentials, STS, the instance metadata service). Those are plain HTTP or
+// need HTTP/1.1, so they must not go through the h2-only transports.
+func TestCredentialRequestsAvoidH2OnlyTransport(t *testing.T) {
+	pki := newTestPKI(t)
+	creds := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(`{"AccessKeyId":"id","SecretAccessKey":"secret","Token":"tok","Expiration":"2099-01-01T00:00:00Z"}`))
+	}))
+	t.Cleanup(creds.Close)
+
+	t.Setenv("AWS_ACCESS_KEY_ID", "")
+	t.Setenv("AWS_SECRET_ACCESS_KEY", "")
+	t.Setenv("AWS_PROFILE", "")
+	t.Setenv("AWS_SDK_LOAD_CONFIG", "0")
+	t.Setenv("AWS_SHARED_CREDENTIALS_FILE", filepath.Join(t.TempDir(), "none"))
+	t.Setenv("AWS_CA_BUNDLE", "")
+	t.Setenv("AWS_CONTAINER_CREDENTIALS_FULL_URI", creds.URL)
+	t.Setenv("AWS_EC2_METADATA_DISABLED", "true")
+
+	for _, conns := range []int{1, 4} {
+		sc := &SessionCache{sessions: map[Options]*session.Session{}}
+		sess, err := sc.newSession(context.Background(), Options{
+			Endpoint:       "https://127.0.0.1:1",
+			CACert:         pki.caFile,
+			Transport:      TransportHTTP2,
+			TransportConns: conns,
+			ConnPoolSize:   4,
+			LogLevel:       log.LevelError,
+			region:         "us-east-1",
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		v, err := sess.Config.Credentials.Get()
+		if err != nil {
+			t.Fatalf("conns=%d: credential request failed: %v", conns, err)
+		}
+		if v.AccessKeyID != "id" {
+			t.Errorf("conns=%d: access key = %q", conns, v.AccessKeyID)
+		}
+	}
+}
+
+// The probe transport that credential clients use must behave like the real
+// ones apart from the protocol.
+func TestHTTP2ProbeTransport(t *testing.T) {
+	pki := newTestPKI(t)
+	c, err := newHTTPClient(Options{
+		CACert: pki.caFile, ClientCert: pki.clientCert, ClientKey: pki.clientKey,
+		NoVerifySSL: true, Transport: TransportHTTP2, TransportConns: 1, ConnPoolSize: 8,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rr, ok := c.Transport.(*roundRobinTransport)
+	if !ok {
+		t.Fatalf("transport = %T, want the multi connection transport", c.Transport)
+	}
+	p := rr.probe
+	if p == nil {
+		t.Fatal("no probe transport")
+	}
+	if p.Proxy == nil || p.TLSHandshakeTimeout == 0 || p.DialContext == nil {
+		t.Error("probe lost the proxy, the TLS handshake timeout or the dialer of the default transport")
+	}
+	if p.MaxIdleConnsPerHost != 8 {
+		t.Errorf("probe idle pool = %d, want 8", p.MaxIdleConnsPerHost)
+	}
+	if p.Protocols == nil || p.Protocols.HTTP2() || !p.Protocols.HTTP1() {
+		t.Errorf("probe protocols = %v, want HTTP/1.1 only", p.Protocols)
+	}
+	cfg := p.TLSClientConfig
+	if cfg == nil || !cfg.InsecureSkipVerify || cfg.RootCAs == nil || len(cfg.Certificates) != 1 {
+		t.Errorf("probe TLS config does not carry the options: %+v", cfg)
+	}
+	if cfg != nil && cfg.VerifyConnection != nil {
+		t.Error("probe must not require h2")
+	}
+}
