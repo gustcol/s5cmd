@@ -210,6 +210,9 @@ func TestPanicIsReportedAndPoolSurvives(t *testing.T) {
 	if len(got) != 1 || !strings.Contains(got[0].Error(), "bad task") {
 		t.Fatalf("want one panic error, got %v", got)
 	}
+	if strings.Contains(got[0].Error(), "\n") {
+		t.Fatalf("panic error should be one line, got %q", got[0])
+	}
 	if ok != 10 {
 		t.Fatalf("%d healthy tasks ran, want 10", ok)
 	}

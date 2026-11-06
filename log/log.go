@@ -81,7 +81,9 @@ func New(level string, json bool) *Logger {
 
 // printf prints message according to the given level, message and std mode.
 func (l *Logger) printf(level LogLevel, message Message, std *os.File) {
-	if level < l.level {
+	// the global logger is nil until Init is called, for example in tests of
+	// packages that log.
+	if l == nil || level < l.level {
 		return
 	}
 	l.printfHelper(level, message, std)

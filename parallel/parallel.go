@@ -6,6 +6,8 @@ import (
 	"runtime"
 	"runtime/debug"
 	"sync"
+
+	"github.com/peak/s5cmd/v2/log"
 )
 
 const (
@@ -111,7 +113,9 @@ func (p *Manager) RunContext(ctx context.Context, fn Task, waiter *Waiter) bool 
 func runTask(fn Task) (err error) {
 	defer func() {
 		if r := recover(); r != nil {
-			err = fmt.Errorf("panic in worker: %v\n%s", r, debug.Stack())
+			err = fmt.Errorf("panic in worker: %v", r)
+			// the stack is only useful when debugging s5cmd itself.
+			log.Debug(log.DebugMessage{Err: fmt.Sprintf("%v\n%s", err, debug.Stack())})
 		}
 	}()
 
