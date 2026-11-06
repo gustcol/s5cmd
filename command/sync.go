@@ -302,7 +302,7 @@ func (s Sync) Run(c *cli.Context) error {
 
 	// Create commands in background.
 	var rejected int64 // objects planRun refused to generate a command for
-	go s.planRun(c, onlySource, onlyDest, commonObjects, dsturl, strategy, pipeWriter, isBatch, &rejected)
+	go s.planRun(c, cancel, onlySource, onlyDest, commonObjects, dsturl, strategy, pipeWriter, isBatch, &rejected)
 
 	err = NewRun(c, pipeReader).Run(ctx)
 	if n := atomic.LoadInt64(&rejected); n > 0 {
@@ -521,6 +521,7 @@ func (s Sync) printSortErrors(errCh <-chan error) {
 // planRun prepares the commands and writes them to writer 'w'.
 func (s Sync) planRun(
 	c *cli.Context,
+	cancel context.CancelFunc,
 	onlySource, onlyDest chan *url.URL,
 	common chan *ObjectPair,
 	dsturl *url.URL,
@@ -557,7 +558,10 @@ func (s Sync) planRun(
 				// sure the command exits non-zero.
 				printError(s.fullCommand, s.op, err)
 				atomic.AddInt64(rejected, 1)
-				stopped = s.exitOnError
+				if s.exitOnError {
+					stopped = true
+					cancel()
+				}
 				continue
 			}
 			command, err := generateCommand(c, "cp", defaultFlags, srcurl, curDestURL)
