@@ -317,3 +317,23 @@ func TestHeadIntegrityParsesHeaders(t *testing.T) {
 	assert.NilError(t, err)
 	assert.Equal(t, gotPart, "")
 }
+
+// A server that cannot report the part layout gives an unknown result for a
+// mismatch, unless the caller says that a wrong "different" is acceptable.
+func TestCompareFileAssumeLayout(t *testing.T) {
+	data := strings.Repeat("x", 250)
+	bad := "y" + data[1:]
+
+	f := multipart(t, data, 100, ChecksumCRC32, true)
+	assert.Equal(t, compare(t, f, bad, CompareOptions{PartSizes: []int64{100}}).Result, CompareUnknown)
+	assert.Equal(t, compare(t, f, bad, CompareOptions{PartSizes: []int64{100}, AssumeLayout: true}).Result, CompareDifferent)
+	assert.Equal(t, compare(t, f, data, CompareOptions{PartSizes: []int64{100}, AssumeLayout: true}).Result, CompareEqual)
+	// a part size that does not give the number of parts of the object is no basis for a verdict.
+	assert.Equal(t, compare(t, f, bad, CompareOptions{PartSizes: []int64{70}, AssumeLayout: true}).Result, CompareUnknown)
+
+	e := multipart(t, data, 100, "", true)
+	assert.Equal(t, compare(t, e, bad, CompareOptions{PartSizes: []int64{100}}).Result, CompareUnknown)
+	assert.Equal(t, compare(t, e, bad, CompareOptions{PartSizes: []int64{100}, AssumeLayout: true}).Result, CompareDifferent)
+	assert.Equal(t, compare(t, e, data, CompareOptions{PartSizes: []int64{100}, AssumeLayout: true}).Result, CompareEqual)
+	assert.Equal(t, compare(t, e, bad, CompareOptions{AssumeLayout: true}).Result, CompareUnknown)
+}

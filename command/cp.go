@@ -1071,7 +1071,8 @@ func contentVerdict(cmp storage.Comparison, srcObj, dstObj *storage.Object) (boo
 }
 
 func (c Copy) compareContent(ctx context.Context, srcurl, dsturl *url.URL) (storage.Comparison, error) {
-	opts := storage.CompareOptions{PartSizes: []int64{c.partSize}}
+	// a wrong "different" only copies the object again.
+	opts := storage.CompareOptions{PartSizes: []int64{c.partSize}, AssumeLayout: true}
 
 	switch {
 	case !srcurl.IsRemote() && dsturl.IsRemote():

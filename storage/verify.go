@@ -136,6 +136,13 @@ type CompareOptions struct {
 	// the server cannot tell the size of a part, typically the part size
 	// configured for the transfer.
 	PartSizes []int64
+	// AssumeLayout makes a mismatch count as a difference when the server
+	// cannot report the part layout but one of PartSizes gives the right
+	// number of parts. Without it such a mismatch is only "unknown", because
+	// the same content can be split in parts in other ways. Use it where a
+	// wrong "different" is cheap (sync copies the object again) and a wrong
+	// "same" is not.
+	AssumeLayout bool
 }
 
 // CompareFile compares the local file at path with the remote object u using
@@ -243,6 +250,9 @@ func compareComposite(ctx context.Context, p IntegrityProvider, u *url.URL, path
 		detail := "the part layout of the object is not known"
 		if local != "" {
 			detail = fmt.Sprintf("the %s of the local file split in parts of equal size is %s, the object has %s", method, local, cs.Value)
+			if opts.AssumeLayout {
+				return Comparison{Result: CompareDifferent, Method: method, Detail: detail}, nil
+			}
 		}
 		return Comparison{Method: method, Detail: detail}, nil
 	}
@@ -372,6 +382,9 @@ func compareETag(ctx context.Context, p IntegrityProvider, u *url.URL, path stri
 
 	detail := fmt.Sprintf("the object was uploaded in %d parts and the part size is not known", parts)
 	if tried {
+		if opts.AssumeLayout {
+			return Comparison{Result: CompareDifferent, Method: method, Detail: fmt.Sprintf("the ETag of an upload in %d parts of the configured size does not match", parts)}, nil
+		}
 		detail = fmt.Sprintf("the ETag of an upload in %d parts could not be reproduced, the parts may have different sizes", parts)
 	}
 	return Comparison{Method: method, Detail: detail}, nil
