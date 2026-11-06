@@ -12,6 +12,8 @@ flags) and ships fixes for the bugs that hurt in production.
 Every change is tested with the unit and end-to-end suites and also against a real MinIO server
 over the network, comparing the behavior with upstream v2.3.0.
 
+Note: s5cmd still uses aws-sdk-go v1, which is end of life. A move to aws-sdk-go-v2 is planned.
+
 ### What's new in v2.4.0
 
 Breaking changes first, then the rest. See [CHANGELOG.md](./CHANGELOG.md) for every item with

@@ -10,11 +10,17 @@ This is the first release of the maintained fork at github.com/gustcol/s5cmd. Bu
 - The minimum Go version to build from source is 1.26. The Docker image builds with Go 1.27.
 
 #### Security
-- `cp`, `mv` and `sync` refuse S3 keys that would be written outside a local destination (for example `data/../../evil`). The object is refused with an error, the other objects are still processed, and the command exits non-zero. On Windows, keys with backslash-separated `..` segments or a colon are refused too. ([#872](https://github.com/peak/s5cmd/issues/872))
+- `cp`, `mv` and `sync` refuse S3 keys that would be written outside a local destination (for example `data/../../evil`). The object is refused with an error, the other objects are still processed, and the command exits non-zero. On Windows, keys with backslash-separated `..` segments or a colon, reserved device names (`NUL`, `COM1`) and names ending in a dot or space are refused too. A directory inside the destination that is a symlink to a place outside it is not followed either. ([#872](https://github.com/peak/s5cmd/issues/872))
 
 #### Bug fixes
 - `sync --delete` no longer deletes destination objects that are excluded by `--exclude` or not matched by `--include`. ([#815](https://github.com/peak/s5cmd/issues/815)) ([#883](https://github.com/peak/s5cmd/pull/883)) Terry Rankine
 - `sync` uses `--source-region` and `--destination-region` when listing the source and the destination. ([#816](https://github.com/peak/s5cmd/issues/816))
+- `sync --delete` with `--exclude` or `--include` also works when the local destination is spelled `./dst/`, `./dst` or `dst/./`. Before, excluded files in such a destination were deleted.
+- `sync --delete` deletes nothing and exits non-zero with "not deleting: source listing incomplete" when listing the source failed part way (for example an unreadable directory). An empty source still deletes as before.
+- `cp --if-source-newer` skips the copy when the modification time of the source or the destination is unknown, instead of overwriting.
+- `sync --exit-on-error` stops the whole sync when an object key is refused.
+- `--no-verify-ssl` keeps the dial timeout, keep-alive and HTTP/2 settings of the default transport.
+- A second Ctrl-C (or SIGTERM) quits right away. The first one still starts a clean shutdown.
 - `rm` can delete objects whose key ends with `/` (directory markers), with `--raw` or with a wildcard. ([#834](https://github.com/peak/s5cmd/issues/834))
 - `cp --no-clobber` checks the destination in the region given by `--destination-region`. ([#839](https://github.com/peak/s5cmd/issues/839))
 - `s5cmd` terminates itself with SIGINT or SIGTERM after cleanup, so shells and supervisors can see it was interrupted. On Windows it exits with 130. ([#615](https://github.com/peak/s5cmd/issues/615))
@@ -22,20 +28,21 @@ This is the first release of the maintained fork at github.com/gustcol/s5cmd. Bu
 - `cp` and `sync` return an error on "too many open files" instead of calling `os.Exit` from a worker, so the progress bar, the log and the `--stat` summary are finished and `run` is not killed. ([#882](https://github.com/peak/s5cmd/pull/882)) Terry Rankine
 - `sync` no longer leaks an `os.Exit` goroutine, calls the cancel function it creates, does not block the planner when `Run` returns early, and skips nil errors sent by the sorter on cancelation. ([#882](https://github.com/peak/s5cmd/pull/882)) Terry Rankine
 - `sync` does not print a second "context canceled" error after the first listing error with `--exit-on-error`.
-- Fixed nil-pointer panics in `Copy` with `--no-such-upload-retry-count`, in `Stat`, in `--if-source-newer` when the modification time is missing, and in `parallel.Run` before `Init`. User-defined metadata no longer drops the retry ID. The "expected at most N arguments" error reports the right number. ([#880](https://github.com/peak/s5cmd/pull/880)) Terry Rankine
+- Fixed nil-pointer panics in `Copy` with `--no-such-upload-retry-count`, in `Stat`, in `--if-source-newer` when the modification time is missing, and in `parallel.Run` before `Init`, which now panics with a clear message instead of a nil dereference. User-defined metadata no longer drops the retry ID. The "expected at most N arguments" error reports the right number. ([#880](https://github.com/peak/s5cmd/pull/880)) Terry Rankine
 - Fixed data races in the progress bar counters and the statistics maps, and a double close of the log channel. ([#881](https://github.com/peak/s5cmd/pull/881)) Terry Rankine
 - `--dry-run` returns a usable file handle instead of an empty `os.File` that panicked. ([#879](https://github.com/peak/s5cmd/pull/879)) Terry Rankine
 - Errors from endpoint parsing and region lookup are wrapped with `%w`, so `errors.Is` and `errors.As` work. ([#885](https://github.com/peak/s5cmd/pull/885)) Terry Rankine
-- A panic in a worker task is reported as an error instead of crashing the process in the middle of other transfers.
+- A panic in a worker task is reported as a one-line error instead of crashing the process in the middle of other transfers. The stack is printed at the debug log level.
 - Canceling (SIGINT, `--exit-on-error`) stops queued tasks from starting in `cp`, `select` and `run`, and the `run` line reader no longer blocks forever when the consumer leaves.
 
 #### Improvements
-- The soft limit of open files is raised to the hard limit (capped at 65536), with a fallback on macOS, so the default 256 workers do not hit "too many open files".
+- As a fallback, the soft limit of open files is raised to the hard limit (capped at 65536) where the Go runtime has not already done it, for example on macOS, so the default 256 workers do not hit "too many open files".
 - The HTTP idle connection pool is sized to `--numworkers` x `--concurrency` (capped at 2048) instead of 2 per host.
 - Added `benchmark/` script that runs a `--numworkers` x `--concurrency` matrix for many small and a few large files.
 - Updated all dependencies. `urfave/cli` stays at v2.19.3 because newer versions break the e2e suite.
 
 #### Build and CI
+- GitHub Actions are pinned to commit SHAs.
 - CI runs build and tests on Linux, macOS and Windows with Go 1.26 and 1.27, and QA on Linux. The MinIO service container is started from a step.
 - The release workflow publishes to this repository's GitHub Releases only. The GCS test job, the Homebrew tap and the Docker Hub workflow, which targeted upstream accounts, are removed.
 - `.goreleaser.yml` uses config version 2.
