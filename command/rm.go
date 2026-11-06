@@ -213,7 +213,6 @@ func (d Delete) Run(ctx context.Context) error {
 				if size == 0 {
 					size = summaryTakeSizeHint(deleteKey(object.URL))
 				}
-				println("STORE", deleteKey(object.URL), size)
 				pendingSizes.Store(deleteKey(object.URL), size)
 			}
 			urlch <- object.URL
@@ -241,7 +240,6 @@ func (d Delete) Run(ctx context.Context) error {
 			continue
 		}
 
-		println("RESULT", deleteKey(obj.URL), size)
 		summaryDeleted(size)
 
 		msg := log.InfoMessage{
