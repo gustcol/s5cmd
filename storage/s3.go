@@ -1347,6 +1347,11 @@ func (sc *SessionCache) newSession(ctx context.Context, opts Options) (*session.
 	}
 	if opts.UnsignedPayload {
 		sess.Handlers.Build.PushFront(unsignedPayload)
+		if endpointURL.Scheme == "http" {
+			warnUnsignedPayloadHTTP.Do(func() {
+				log.Error(log.ErrorMessage{Err: "warning: --unsigned-payload is ignored for http:// endpoints, requests are signed as usual"})
+			})
+		}
 	}
 	if opts.NoContentMD5 {
 		sess.Handlers.Build.PushFront(noContentMD5)
@@ -1647,6 +1652,10 @@ func (cd *CsvDecoder) Decode() ([]byte, error) {
 	}
 	return result, nil
 }
+
+// warnUnsignedPayloadHTTP makes sure the warning about --unsigned-payload on
+// a plain http endpoint is printed once per run.
+var warnUnsignedPayloadHTTP sync.Once
 
 // noContentMD5 turns off the Content-MD5 header for uploads only. The SDK
 // option is session wide, but S3 requires Content-MD5 for DeleteObjects and a

@@ -6,11 +6,14 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/aws/session"
 	"github.com/aws/aws-sdk-go/service/s3"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/peak/s5cmd/v2/log"
 	"github.com/peak/s5cmd/v2/storage/url"
@@ -142,5 +145,64 @@ func TestNoContentMD5OnlyAffectsUploads(t *testing.T) {
 		if got := part.HTTPRequest.Header.Get("Content-Md5") != ""; got == noMD5 {
 			t.Errorf("noMD5=%v: UploadPart has Content-MD5 = %v", noMD5, got)
 		}
+	}
+}
+
+func TestUnsignedPayloadWarningOnHTTP(t *testing.T) {
+	t.Setenv("AWS_ACCESS_KEY_ID", "id")
+	t.Setenv("AWS_SECRET_ACCESS_KEY", "secret")
+	t.Setenv("AWS_CA_BUNDLE", "")
+	t.Setenv("AWS_SDK_LOAD_CONFIG", "0")
+
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldStderr := os.Stderr
+	os.Stderr = w
+	t.Cleanup(func() { os.Stderr = oldStderr })
+	log.Init("info", false)
+	warnUnsignedPayloadHTTP = sync.Once{}
+
+	newSess := func(endpoint string, unsigned bool) {
+		sc := &SessionCache{sessions: map[Options]*session.Session{}}
+		if _, err := sc.newSession(context.Background(), Options{
+			Endpoint: endpoint, UnsignedPayload: unsigned, LogLevel: log.LevelInfo, region: "us-east-1",
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	newSess("https://127.0.0.1:1", true) // no warning
+	newSess("http://127.0.0.1:1", false) // no warning
+	newSess("http://127.0.0.1:1", true)  // one warning
+	newSess("http://127.0.0.1:2", true)  // still one
+
+	got := make(chan string, 1)
+	go func() {
+		var sb strings.Builder
+		buf := make([]byte, 4096)
+		for {
+			n, err := r.Read(buf)
+			sb.Write(buf[:n])
+			if err != nil || strings.Count(sb.String(), "\n") >= 1 {
+				break
+			}
+		}
+		got <- sb.String()
+	}()
+	select {
+	case out := <-got:
+		if strings.Count(out, "--unsigned-payload is ignored") != 1 {
+			t.Errorf("unexpected output %q", out)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("no warning printed")
+	}
+	// give a possible second warning time to show up
+	time.Sleep(200 * time.Millisecond)
+	w.Close()
+	rest, _ := io.ReadAll(r)
+	if len(rest) != 0 {
+		t.Errorf("more output after the first warning: %q", rest)
 	}
 }
