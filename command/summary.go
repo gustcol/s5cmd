@@ -1,6 +1,8 @@
 package command
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -263,6 +265,29 @@ func validateSummaryPath(c *cli.Context) error {
 	return nil
 }
 
+// createSummaryTemp creates a new file next to path with mode 0666, so that
+// the umask decides the permissions, like it does for downloaded files.
+// os.CreateTemp always uses 0600.
+func createSummaryTemp(path string) (*os.File, error) {
+	var lastErr error
+	for i := 0; i < 100; i++ {
+		var b [6]byte
+		if _, err := rand.Read(b[:]); err != nil {
+			return nil, err
+		}
+		name := filepath.Join(filepath.Dir(path), "."+filepath.Base(path)+"."+hex.EncodeToString(b[:]))
+		f, err := os.OpenFile(name, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o666)
+		if err == nil {
+			return f, nil
+		}
+		if !errors.Is(err, os.ErrExist) {
+			return nil, err
+		}
+		lastErr = err
+	}
+	return nil, lastErr
+}
+
 // writeSummary writes the report to path. The file is written to a temporary
 // file in the same directory and renamed, so a reader never sees half of it.
 func writeSummary(path string, r summaryReport) error {
@@ -272,18 +297,15 @@ func writeSummary(path string, r summaryReport) error {
 	}
 	data = append(data, '\n')
 
-	f, err := os.CreateTemp(filepath.Dir(path), "."+filepath.Base(path)+".*")
+	f, err := createSummaryTemp(path)
 	if err != nil {
 		return fmt.Errorf("writing summary: %w", err)
 	}
 	tmp := f.Name()
 	_, werr := f.Write(data)
+	serr := f.Sync()
 	cerr := f.Close()
-	if err := errors.Join(werr, cerr); err != nil {
-		os.Remove(tmp)
-		return fmt.Errorf("writing summary: %w", err)
-	}
-	if err := os.Chmod(tmp, 0o644); err != nil {
+	if err := errors.Join(werr, serr, cerr); err != nil {
 		os.Remove(tmp)
 		return fmt.Errorf("writing summary: %w", err)
 	}

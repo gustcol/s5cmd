@@ -203,3 +203,11 @@ func TestSummaryReportMarksCanceled(t *testing.T) {
 	r = s.report(time.Now(), nil)
 	assert.Assert(t, !r.Canceled && r.Success)
 }
+
+func TestWriteSummaryReplacesExistingFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "s.json")
+	assert.NilError(t, os.WriteFile(path, []byte("old"), 0o644))
+	assert.NilError(t, writeSummary(path, summaryReport{Command: "cp"}))
+	data, _ := os.ReadFile(path)
+	assert.Assert(t, strings.Contains(string(data), `"command": "cp"`))
+}
