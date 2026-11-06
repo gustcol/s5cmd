@@ -680,3 +680,25 @@ func TestSyncChecksumAndSizeOnlyAreExclusive(t *testing.T) {
 	result.Assert(t, icmd.Expected{ExitCode: 1})
 	assert.Assert(t, strings.Contains(result.Stderr(), "cannot be used together"), result.Stderr())
 }
+
+// --no-clobber never overwrites, also when --checksum finds different content.
+func TestCopyChecksumDoesNotOverrideNoClobber(t *testing.T) {
+	t.Parallel()
+
+	s3client, s5cmd := setup(t)
+	bucket := s3BucketFromTestName(t)
+	createBucket(t, s3client, bucket)
+	putFile(t, s3client, bucket, "obj", "aaaa")
+
+	workdir := fs.NewDir(t, bucket, fs.WithFile("obj", "bbbb"))
+	defer workdir.Remove()
+	src := filepath.ToSlash(workdir.Join("obj"))
+	dst := fmt.Sprintf("s3://%v/obj", bucket)
+
+	icmd.RunCmd(s5cmd("cp", "--checksum", "--no-clobber", src, dst)).Assert(t, icmd.Success)
+	assert.Assert(t, ensureS3Object(s3client, bucket, "obj", "aaaa"))
+
+	// without --no-clobber the different content of the same size is copied.
+	icmd.RunCmd(s5cmd("cp", "--checksum", src, dst)).Assert(t, icmd.Success)
+	assert.Assert(t, ensureS3Object(s3client, bucket, "obj", "bbbb"))
+}

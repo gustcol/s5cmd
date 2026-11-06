@@ -1031,7 +1031,8 @@ func (c Copy) shouldOverride(ctx context.Context, srcurl *url.URL, dsturl *url.U
 		}
 	}
 
-	if c.checksum {
+	// --no-clobber is the safe choice, it wins over --checksum.
+	if c.checksum && !c.noClobber {
 		same, err := c.sameContent(ctx, srcurl, dsturl, srcObj, dstObj)
 		if err != nil {
 			return err
