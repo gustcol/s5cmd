@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"regexp"
+	"runtime"
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
@@ -677,6 +678,11 @@ func TestUnsafeLocalKey(t *testing.T) {
 		{key: "a/b.txt:stream", windows: true, unsafe: true},
 		{key: `\\server\share\evil`, windows: true},
 		{key: "C:/evil", unsafe: false}, // fine on unix, stays inside
+		{key: "a/b.txt.", windows: true, unsafe: true},
+		{key: "a/b.txt ", windows: true, unsafe: true},
+		{key: "a/.../b", windows: true, unsafe: true},
+		{key: "a/./b", windows: true},
+		{key: "a/b.txt.", unsafe: false},
 	}
 
 	for _, tc := range testcases {
@@ -710,6 +716,22 @@ func TestJoinInside(t *testing.T) {
 		{base: "dest", key: "../dest2/b.txt", unsafe: true},
 		{base: ".", key: "../b.txt", unsafe: true},
 		{base: "s3://bucket/prefix/", key: "../b.txt", want: "prefix/../b.txt"},
+	}
+
+	if runtime.GOOS == "windows" {
+		testcases = append(testcases, []struct {
+			base   string
+			key    string
+			want   string
+			unsafe bool
+		}{
+			{base: "dest", key: "NUL", unsafe: true},
+			{base: "dest", key: "a/com1.txt", unsafe: true},
+			{base: "dest", key: "a/CON", unsafe: true},
+			{base: "dest", key: "a/b.txt.", unsafe: true},
+			{base: "dest", key: "a/b.txt ", unsafe: true},
+			{base: "dest", key: "a/nul.go.txt", want: "dest/a/nul.go.txt"},
+		}...)
 	}
 
 	for _, tc := range testcases {

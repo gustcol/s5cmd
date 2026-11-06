@@ -221,8 +221,21 @@ func unsafeLocalKey(key string, windows bool) bool {
 		if seg == ".." {
 			return true
 		}
+		// Windows strips trailing dots and spaces from names, so "a.txt."
+		// and "a.txt" are the same file, and "..." can turn into ".."
+		// when the path is resolved.
+		if windows && seg != "." && (strings.HasSuffix(seg, ".") || strings.HasSuffix(seg, " ")) {
+			return true
+		}
 	}
 	return false
+}
+
+func localKeySeparators() string {
+	if runtime.GOOS == "windows" {
+		return `/\`
+	}
+	return "/"
 }
 
 // JoinInside is Join for a local destination that must contain the result.
@@ -234,6 +247,14 @@ func (u *URL) JoinInside(s string) (*URL, error) {
 	}
 
 	if unsafeLocalKey(s, runtime.GOOS == "windows") {
+		return nil, fmt.Errorf("%w: key %q, destination %q", ErrUnsafeLocalPath, s, u.Path)
+	}
+
+	// Leading slashes are dropped by Join, so ignore them here. What is left
+	// must be a local name for the platform. On Windows this also refuses
+	// reserved device names such as NUL or COM1 and names with trailing dots
+	// or spaces.
+	if rest := strings.TrimLeft(s, localKeySeparators()); rest != "" && !filepath.IsLocal(filepath.FromSlash(rest)) {
 		return nil, fmt.Errorf("%w: key %q, destination %q", ErrUnsafeLocalPath, s, u.Path)
 	}
 
