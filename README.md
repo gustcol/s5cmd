@@ -81,7 +81,7 @@ Also in this release:
   panics reported as errors.
 - **Parallelism:** queued tasks stop on cancel, the open file limit is raised to the hard limit,
   the HTTP connection pool follows `--numworkers` x `--concurrency`, and `benchmark/` has a
-  matrix script.
+  matrix script. See [Maximum throughput](#maximum-throughput) for settings per workload.
 - **Toolchain:** Go 1.26 or newer, updated dependencies, CI on Linux, macOS and Windows.
 
 See [CHANGELOG.md](./CHANGELOG.md) for details per release.
@@ -906,6 +906,134 @@ s5cmd --numworkers 10 cp --concurrency 10 '/Users/foo/bar/*' s3://mybucket/foo/b
 ```
 
 If you have a few, large files to download, setting `--numworkers` to a very high value will not affect download speed. In this scenario setting `--concurrency` to a higher value may have a better impact on the download speed.
+
+## Maximum throughput
+
+For v2.6.0 and later. The defaults already fill a fast LAN link. This section is for the cases where they do not. Replace `s3://bucket/prefix/` and `dir/` with your own paths. Global options (`--numworkers`, `--endpoint-url`, `--transport`, `--unsigned-payload`, `--no-content-md5`) go before the command, `--concurrency` and `--part-size` after it.
+
+### Quick start
+
+1. Install v2.6.0 from the [releases](https://github.com/gustcol/s5cmd/releases/tag/v2.6.0). Linux amd64 (use `Linux-arm64` for arm64, `macOS-arm64` or `macOS-64bit` on a Mac):
+
+   ```shell
+   curl -sL https://github.com/gustcol/s5cmd/releases/download/v2.6.0/s5cmd_2.6.0_Linux-64bit.tar.gz | sudo tar -xz -C /usr/local/bin s5cmd
+   ```
+
+2. Check that this machine can carry the settings. Give the link speed and the round trip time to the server if you know them:
+
+   ```shell
+   scripts/check-host.sh --numworkers 256 --concurrency 5 --part-size 50 --bandwidth 10 --rtt 20
+   ```
+
+   It prints `PASS`, `WARN` or `FAIL` per check with the fix command, and ends with a suggested command that fits the limits it found. More below.
+
+3. Run the command for your case.
+
+### Commands
+
+Many small files. A small file is one request, so only `--numworkers` matters. Raise it when latency is high, lower it for a small server.
+
+```shell
+s5cmd --numworkers 256 cp 'dir/*' s3://bucket/prefix/
+```
+
+A few very large files. `--concurrency` is the number of parts in flight. Upload scaled up to 16 in our test, and 1 was very slow.
+
+```shell
+s5cmd --numworkers 4 cp --concurrency 16 --part-size 50 dir/big.bin s3://bucket/prefix/
+```
+
+Mixed workloads. Keep `--numworkers` x `--concurrency` at 2048 or less, the size of the idle connection pool.
+
+```shell
+s5cmd --numworkers 128 cp --concurrency 16 --part-size 50 'dir/*' s3://bucket/prefix/
+```
+
+Copy between two buckets. This is one server-side `CopyObject` per object, so only the number of objects per second matters.
+
+```shell
+s5cmd --numworkers 512 cp 's3://source-bucket/prefix/*' s3://bucket/prefix/
+```
+
+Sync a large tree. `sync` lists both sides first, so the server's listing speed sets the time.
+
+```shell
+s5cmd --numworkers 512 sync dir/ s3://bucket/prefix/
+```
+
+High latency (cross-region, WAN). Each worker waits a round trip per file, so use more workers.
+
+```shell
+s5cmd --numworkers 1024 cp --concurrency 16 --part-size 50 'dir/*' s3://bucket/prefix/
+```
+
+TLS endpoint, fastest. Skips the body hashing (75% of client CPU in a 4 GiB upload profile), and `CRC32C` keeps an end-to-end check. Read [Upload options](#upload-options---unsigned-payload-and---no-content-md5) for the trade-off first.
+
+```shell
+s5cmd --unsigned-payload --no-content-md5 cp --checksum-algorithm CRC32C --concurrency 16 --part-size 50 'dir/*' s3://bucket/prefix/
+```
+
+Download and check the files against the objects, with a summary of the job.
+
+```shell
+s5cmd cp --verify --summary-json summary.json 's3://bucket/prefix/*' dir/
+```
+
+Server that is not AWS (MinIO, Ceph RGW, RustFS). Start with fewer workers and go up while the wall time still drops. HTTP/1.1 is the default and the fastest, see [TLS and HTTP protocol options](#tls-and-http-protocol-options) for `--transport http2` and `--transport-conns`.
+
+```shell
+s5cmd --endpoint-url https://s3.internal:9000 --numworkers 64 cp --concurrency 8 --part-size 50 'dir/*' s3://bucket/prefix/
+```
+
+Worker counts above 256 and the `--concurrency` values here are starting points. Only the numbers in the next section were measured.
+
+### What we measured
+
+Setup unless noted: plain HTTP, RustFS on 8 CPU cores and `s5cmd` on 8 other cores of the same machine, data on tmpfs, median of 3. A small, fast server: read the shape, not the values.
+
+- One 4 GiB file, 50 MiB parts, upload: 32.5 s with `--concurrency 1`, 6.93 s with 5, 3.99 s with 16, 4.01 s with 32. 200 MiB parts were not faster. With 8 MiB parts and 16 or 32 parts in flight, 6 of 13 uploads failed or took 169 to 207 s (none in 12 runs with 50 or 200 MiB parts), so keep `--part-size` at 50 or more.
+- 20,000 files of 64 KiB, upload: 8.0 s with 4 workers, 4.8 s with 16, 5.3 s with 256 and 1024. Download took 15 to 17 s at every worker count, bound by listing: `ls` of the 20,000 objects took 12.9 s, and a `sync` with nothing to copy 12.8 s.
+- Latency, 2,000 files of 64 KiB over a LAN with added delay (an upstream build), 16 against 256 workers, upload: 0.73 s and 0.78 s at 0 ms, 4.75 s and 0.87 s at 20 ms, 16.5 s and 1.80 s at 80 ms.
+- TLS options and HTTP/2: see the numbers in [Upload options](#upload-options---unsigned-payload-and---no-content-md5), [End-to-end checksums on upload](#end-to-end-checksums-on-upload---checksum-algorithm) and [`--transport-conns` and HTTP/2 throughput](#--transport-conns-and-http2-throughput).
+
+### Why: connections, memory, descriptors
+
+- **Connections.** `--numworkers` (default 256) files are in flight, and a file larger than `--part-size` (default 50 MiB) uses up to `--concurrency` (default 5) connections. So at most `--numworkers` x `--concurrency` connections, 1280 by default. See [Configuring Concurrency](#configuring-concurrency).
+- **Memory.** Uploads from a file keep no part buffers: 34 MiB at the peak for a 4 GiB upload. Uploads from stdin (`s5cmd pipe`) hold `--concurrency + 1` buffers of `--part-size`: 334 MiB measured with the defaults. Downloads: 29 MiB. The base grows with workers: 30 to 42 MiB with 4, 59 to 76 MiB with 256, 115 to 147 MiB with 1024.
+- **File descriptors.** Each connection and each local file in flight needs one: 1664 with the defaults, more than the usual soft limit of 1024. On Linux the soft limit is raised at startup to the hard limit (we saw hard limits of 512, 4096, 100000 and 1048576 give soft limits of 511, 4096, 99999 and 1048575), so raise the hard limit (`LimitNOFILE=`, `docker run --ulimit nofile=N:N`, `/etc/security/limits.conf`). v2.4.0 added a fallback to 65536 at most, see the [changelog](./CHANGELOG.md).
+- **Long links.** One TCP stream cannot go faster than its window divided by the round trip time, so the buffers (`tcp_rmem`, `tcp_wmem`) must cover the bandwidth-delay product, 95 MiB for 10 Gbit/s and 80 ms. The script checks this. We did not measure a single large file over a real long link.
+
+### `scripts/check-host.sh`
+
+```shell
+scripts/check-host.sh [--numworkers N] [--concurrency N] [--part-size MiB] [--bandwidth Gbit] [--rtt ms] [--streams N]
+```
+
+It only reads `ulimit`, `/proc` and `sysctl`, never changes anything, and explains each threshold in a comment with its source. It checks open files, ephemeral ports, `tcp_tw_reuse`, socket buffers (with `--bandwidth` and `--rtt`), congestion control, free memory and CPU count. On macOS it checks what applies and skips the rest. It exits with 1 if anything is `FAIL`. A real run in a container started with `--ulimit nofile=512:512` (some lines trimmed):
+
+```
+$ scripts/check-host.sh --bandwidth 10 --rtt 80
+Settings: numworkers=256 concurrency=5 part-size=50 MiB streams=1 bandwidth=10 Gbit/s rtt=80 ms
+
+FAIL open-files: soft 512, hard 512, effective after startup: 512, needed: 1664
+     fix: raise the hard limit: ulimit -n 1664 (shell), LimitNOFILE=1664 (systemd unit), ...
+PASS ephemeral-ports: net.ipv4.ip_local_port_range 32768 60999 = 28232 ports, needed: 1280 (x2 headroom: 2560)
+WARN tcp_rmem: max 6.0 MiB, needed 38.1 MiB
+     fix: sysctl -w net.ipv4.tcp_rmem="4096 131072 40000000"
+PASS memory: available 23330 MiB, estimated need 374 MiB (74 base + 1 stdin upload(s) x 50 MiB x 6 buffers)
+
+1 FAIL, 2 WARN
+Suggested: s5cmd --numworkers 64 cp --concurrency 5 --part-size 50 s3://bucket/prefix/ dir/   (lowered to fit the limits above)
+```
+
+The buffer sizes and the factor of 2 on the receive side are rules of thumb, not kernel constants. A clean result means this machine is not the limit, not that the transfer will be fast: the script does not know the server, a proxy or a rate limit.
+
+### How to measure
+
+- `time s5cmd ...` gives the wall time and client CPU. High CPU means the client is the limit (hashing, TLS); low CPU means the network or the server.
+- `--summary-json FILE` on `cp`, `mv`, `sync` and `rm` writes counts, bytes, duration and `throughput_bytes_per_second` ([Job summary](#job-summary)). `--stat` counts commands, not files: one wildcard `cp` of 20,000 files is 1.
+- [`benchmark/concurrency_matrix.sh`](benchmark/concurrency_matrix.sh) runs a matrix of `--numworkers` and `--concurrency` and prints time, throughput and peak memory. [`benchmark/bench.py`](benchmark/bench.py) compares two builds, see the [benchmark readme](benchmark/README.md).
+- Change one thing at a time and take the median of at least 3 runs.
 
 ## Benchmarks
 Some benchmarks regarding the performance of `s5cmd` are introduced below. For more
