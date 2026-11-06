@@ -1,6 +1,9 @@
 # Changelog
 ## v2.5.0 - unreleased
 
+#### Behavior changes
+- `--transport auto` now uses HTTP/1.1. v2.4.0 negotiated HTTP/2 with any server that offered it, which includes Google Cloud Storage, Cloudflare R2 and nginx or Caddy in front of MinIO or Ceph RGW, and sent every request over a single connection. AWS S3 only speaks HTTP/1.1, so nothing changes there. HTTP/1.1 was faster and used less CPU in our tests (4 GiB download over TLS through Caddy: 1.6 s instead of 7.8 s). To get the old behavior back, use `--transport http2`, which also spreads requests over 8 connections (`--transport-conns`).
+
 #### Features
 - New TLS options `--ca-cert`, `--client-cert` and `--client-key` for private CAs and mutual TLS. The CA file replaces the system roots (like `AWS_CA_BUNDLE` and `curl --cacert`) and wins over `AWS_CA_BUNDLE`. `--client-cert` and `--client-key` must be given together. `--no-verify-ssl` works as before.
 - New `--transport auto|http1|http2` option (env `S5CMD_TRANSPORT`, default `auto`). `auto` uses HTTP/1.1, `http1` and `http2` restrict the protocol, and `http2` fails when the server does not negotiate h2. The negotiated protocol is logged at debug level (trace level for `auto`).
@@ -9,7 +12,6 @@
 - New `--no-content-md5` option. Uploads do not send a `Content-MD5` header, so the server does not check the body against it. Other operations (for example `rm` of several objects) still send it. Buckets with Object Lock reject uploads without `Content-MD5`, so do not use it with them. Together with `--unsigned-payload` there is no end-to-end check of the body beyond TLS. With `--unsigned-payload` a 4 GiB upload over TLS used 1.8 s instead of 13.5 s of client CPU.
 
 #### Improvements
-- `--transport auto` uses HTTP/1.1. Go negotiated HTTP/2 on its own with TLS front ends and sent everything over one connection, which made 4 GiB copies 4-5x slower than HTTP/1.1.
 - `run` files with many `cp` and `mv` lines use about 23% less CPU, because the command text is built only when an error is printed.
 
 #### Bugfixes
