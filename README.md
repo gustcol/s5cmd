@@ -180,8 +180,8 @@ s5cmd --ca-cert /etc/ssl/my-ca.pem --endpoint-url https://s3.internal:9000 ls
 s5cmd --ca-cert my-ca.pem --client-cert client.pem --client-key client.key \
     --endpoint-url https://s3.internal:9000 ls s3://bucket
 
-# force HTTP/1.1 or HTTP/2
-s5cmd --transport http1 cp 's3://bucket/*' .
+# HTTP/1.1 is the default, HTTP/2 has to be asked for
+s5cmd --transport http2 cp 's3://bucket/*' .
 S5CMD_TRANSPORT=http2 s5cmd cp 's3://bucket/*' .
 ```
 
@@ -189,11 +189,20 @@ S5CMD_TRANSPORT=http2 s5cmd cp 's3://bucket/*' .
 - `--client-cert FILE` and `--client-key FILE`: PEM client certificate and key for mutual TLS. Both are required together. The SDK variables `AWS_SDK_GO_CLIENT_TLS_CERT` and `AWS_SDK_GO_CLIENT_TLS_KEY` still work; if both they and the flags are set, the flag certificate is offered first.
 - `--no-verify-ssl` still turns off server certificate verification, whatever the other options say.
 - `--transport auto|http1|http2|http3` (env `S5CMD_TRANSPORT`):
-  - `auto` (default): same as before, the TLS handshake (ALPN) picks HTTP/2 or HTTP/1.1.
+  - `auto` (default): HTTP/1.1. Go would otherwise send every request over one HTTP/2 connection whenever a TLS front end such as Caddy or nginx offers h2, which made a 4 GiB download about 5 times slower in our tests. AWS S3 only speaks HTTP/1.1, so nothing changes there.
   - `http1`: HTTP/1.1 only. Parallelism comes from many TCP connections, sized by `--numworkers` x `--concurrency`.
   - `http2`: HTTP/2 only. The request fails if the server does not negotiate `h2`. Requests are spread over `--transport-conns` connections (see below).
   - `http3`: only in builds made with `-tags http3`. The default build prints `this build has no HTTP/3 support`.
   - The negotiated protocol (`HTTP/1.1` or `HTTP/2.0`) is logged once per protocol: with `--log debug` when `--transport` is set explicitly, and with `--log trace` for `auto`.
+
+#### Upload options: `--unsigned-payload` and `--no-content-md5`
+
+For every part it uploads, the AWS SDK reads the whole body once to compute an MD5 and a SHA-256, and only then starts sending. In a profile of a 4 GiB upload over TLS this was about 75% of the client CPU. Two options, both off by default, skip that work:
+
+- `--unsigned-payload`: send `X-Amz-Content-Sha256: UNSIGNED-PAYLOAD`, so the body is not part of the request signature. It only applies to `https` endpoints; over plain HTTP the request is signed as usual, because without TLS the hash is the only thing that ties the signature to the body. The body is then protected by TLS only.
+- `--no-content-md5`: do not send a `Content-MD5` header. The server then does not check the uploaded body against an MD5, so corruption between the client and the server (for example on the plain HTTP hop behind a TLS proxy) is no longer caught by the server.
+
+Use them together for the full effect. 4 x 1 GiB upload over TLS, RustFS behind Caddy: 3.6 s and 13.5 s of client CPU by default, 2.5 s and 1.8 s of client CPU with both options.
 
 #### `--transport-conns` and HTTP/2 throughput
 
@@ -212,6 +221,8 @@ One measurement, 4 GiB over a 40 Gbit LAN with a TLS reverse proxy in front of t
 | HTTP/1.1 | 1.2 s | 2.4 s |
 
 HTTP/1.1 is still the fastest here. HTTP/2 helps when the server or a proxy only offers h2, or when new connections are expensive.
+
+Going past 8 connections did not help in two more tests on one host (4 GiB over TLS, with the S3 server on 8 and on 16 cores): 8, 16 and 32 connections all downloaded in 1.6 to 2.1 s and uploaded in 3.2 to 3.7 s, and none beat HTTP/1.1 (1.5 to 2.0 s and 2.8 to 3.6 s). 32 connections cost 30% more client CPU on download in the first test. That is why the default is 8.
 
 ### Region detection
 
