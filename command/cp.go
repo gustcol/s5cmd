@@ -766,13 +766,20 @@ func (c Copy) doDownload(ctx context.Context, srcurl *url.URL, dsturl *url.URL) 
 		}
 	}
 
-	if c.deleteSource {
-		_ = srcClient.Delete(ctx, srcurl)
-	}
-
+	// the file is in place before the source is deleted: if the rename
+	// fails, the object is still the only good copy.
 	err = dstClient.Rename(file, dsturl.Absolute())
 	if err != nil {
+		if dErr := dstClient.Delete(ctx, &url.URL{Path: file.Name(), Type: dsturl.Type}); dErr != nil {
+			printDebug(c.op, dErr, srcurl, dsturl)
+		}
 		return err
+	}
+
+	if c.deleteSource {
+		if err := srcClient.Delete(ctx, srcurl); err != nil {
+			return err
+		}
 	}
 
 	summaryCopied(size)

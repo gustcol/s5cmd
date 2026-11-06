@@ -702,3 +702,27 @@ func TestCopyChecksumDoesNotOverrideNoClobber(t *testing.T) {
 	icmd.RunCmd(s5cmd("cp", "--checksum", src, dst)).Assert(t, icmd.Success)
 	assert.Assert(t, ensureS3Object(s3client, bucket, "obj", "bbbb"))
 }
+
+// The temporary file is renamed into place before mv deletes the object. If
+// the rename fails, the object must still exist and no temporary file may be
+// left behind.
+func TestMoveDownloadRenameFailureKeepsSource(t *testing.T) {
+	t.Parallel()
+
+	s3client, s5cmd := setup(t)
+	bucket := s3BucketFromTestName(t)
+	createBucket(t, s3client, bucket)
+	putFile(t, s3client, bucket, "obj", "some content")
+
+	// a non-empty directory where the file should go makes the rename fail.
+	workdir := fs.NewDir(t, bucket, fs.WithDir("out", fs.WithDir("obj", fs.WithFile("keep", "x"))))
+	defer workdir.Remove()
+
+	result := icmd.RunCmd(s5cmd("mv", fmt.Sprintf("s3://%v/*", bucket), filepath.ToSlash(workdir.Join("out"))+"/"))
+	result.Assert(t, icmd.Expected{ExitCode: 1})
+	assert.Assert(t, ensureS3Object(s3client, bucket, "obj", "some content"))
+
+	entries, err := os.ReadDir(workdir.Join("out"))
+	assert.NilError(t, err)
+	assert.Equal(t, len(entries), 1, "temporary file left behind")
+}

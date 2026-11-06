@@ -8,6 +8,9 @@
 - New `sync --checksum`. Objects with the same size are compared by content instead of modification time, using the additional checksum or the ETag of the object. It finds a file that was edited to the same size with an old modification time, which the default strategy and `--size-only` miss, and it skips a file that was only touched. It reads every local file that has the same size as its object. Objects that cannot be compared fall back to size and modification time. Cannot be combined with `--size-only`.
 - New `--summary-json FILE` option for `cp`, `mv`, `sync` and `rm`. When the command ends, a JSON file has the counts and bytes copied, skipped, failed and deleted, the duration, the throughput, whether the job was canceled and the first 100 errors. The file is written atomically, its path is checked before the command starts, and the normal output is unchanged.
 
+#### Bugfixes
+- `mv` of an S3 object to a local file deleted the object before the downloaded file was renamed into place, so a failed rename (disk full, permissions) could lose the only copy. The object is now deleted after the rename, and the temporary file is removed when the rename fails. A failed delete after a successful download is now an error instead of being ignored.
+
 ## v2.5.0 - 2026-11-06
 
 #### Behavior changes
