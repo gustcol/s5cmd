@@ -1,4 +1,15 @@
 # Changelog
+## v2.6.0 - unreleased
+
+#### Features
+- New `--checksum-algorithm CRC32C|CRC32|SHA256|SHA1` option for `cp`, `mv` and `sync` uploads. `s5cmd` computes a checksum of the data (of each part for multipart uploads) and sends it as a request header. S3 verifies it and stores it with the object. It works together with `--unsigned-payload` and `--no-content-md5`, and with them it is the end-to-end check of the body. Off by default. `CRC64NVME` is refused with an error: the AWS SDK for Go v1 cannot send it, and it cannot send trailing checksums either, so each file is read once more before the upload. Cost on a loopback server over plain http (1 GiB, median of 3 runs, client CPU is user plus system): 1 GiB file in 16 parts of 64 MiB, no checksum 2.07 s and 3.95 s of CPU, `CRC32C` 2.16 s and 4.24 s, `CRC32` 2.18 s and 4.31 s, `SHA1` 2.52 s and 4.89 s, `SHA256` 2.57 s and 4.96 s; 64 files of 16 MiB, no checksum 0.81 s and 4.05 s, `CRC32C` 0.80 s and 4.32 s, `CRC32` 0.81 s and 4.38 s, `SHA1` 0.92 s and 5.04 s, `SHA256` 0.91 s and 5.10 s. The baseline already includes the SHA-256 of the payload that the signature needs on plain http.
+- New `--verify` option for downloads (`cp`, `mv`, `sync`). The downloaded file is compared with the additional checksum of the object, or with its ETag when that is an MD5, including multipart objects. A mismatch fails the command with exit code 1 and removes the temporary file, so an existing destination file is kept and `mv` does not delete the source. An object that has nothing to compare, or a multipart object on a server that does not report its part layout, gives a `cannot verify` warning on stderr and exit code 0. Multipart objects are checked against `--part-size`, so pass the value of the upload if it was not the default.
+- New `sync --checksum`. Objects with the same size are compared by content instead of modification time, using the additional checksum or the ETag of the object. It finds a file that was edited to the same size with an old modification time, which the default strategy and `--size-only` miss, and it skips a file that was only touched. It reads every local file that has the same size as its object. Objects that cannot be compared fall back to size and modification time. Cannot be combined with `--size-only`.
+- New `--summary-json FILE` option for `cp`, `mv`, `sync` and `rm`. When the command ends, a JSON file has the counts and bytes copied, skipped, failed and deleted, the duration, the throughput, whether the job was canceled and the first 100 errors. The file is written atomically, its path is checked before the command starts, and the normal output is unchanged.
+
+#### Bugfixes
+- `--summary-json` is written by `mv` too, and a `cp` or `mv` of one S3 object given by name counts its size.
+
 ## v2.5.0 - 2026-11-06
 
 #### Behavior changes

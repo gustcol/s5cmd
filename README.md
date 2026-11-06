@@ -541,7 +541,9 @@ src <= dst  |  src == dst  |  ❌
 
 The cost is that every local file that has the same size as its object is read in full, so syncing a large tree this way reads all of it, where the default strategy reads nothing. The hashing runs in the worker that handles the object, so it is as parallel as `--numworkers`. S3 is asked for the checksums of each such object with one extra `HEAD` request (and one per part for a multipart object whose content differs).
 
-If an object cannot be compared (it is encrypted with KMS or a customer key and has no additional checksum, or it is a multipart object whose part layout cannot be reproduced, for example on a server that does not report part sizes), `s5cmd` falls back to the default size and modification time rule for that object and writes a `cannot compare the content` line to the debug log. Upload with `--checksum-algorithm` to make objects comparable. `--checksum` cannot be used with `--size-only`.
+A multipart object is compared by splitting the local file in parts of `--part-size` (use the value the object was uploaded with when it is not the default). S3 reports the real part layout, so the comparison is exact there. Servers that do not (RustFS, for one) cannot tell, so when the part size gives the part count of the object, a mismatch is taken as a difference and the object is uploaded again. The worst case is one unneeded upload.
+
+If an object cannot be compared (it is encrypted with KMS or a customer key and has no additional checksum, or it is a multipart object whose part layout cannot be reproduced) `s5cmd` falls back to the default size and modification time rule for that object and writes a `cannot compare the content` line to the debug log. Upload with `--checksum-algorithm` to make objects comparable. `--checksum` cannot be used with `--size-only`.
 
 ### Job summary
 
@@ -556,6 +558,7 @@ If an object cannot be compared (it is encrypted with KMS or a customer key and 
   "finished_at": "2026-11-06T10:00:12.5Z",
   "duration_seconds": 12.5,
   "success": true,
+  "canceled": false,
   "copied":  {"count": 120, "bytes": 1048576000},
   "skipped": {"count": 880, "bytes": 5242880000},
   "failed":  {"count": 0, "bytes": 0},
@@ -566,10 +569,11 @@ If an object cannot be compared (it is encrypted with KMS or a customer key and 
 ```
 
 * `copied` counts the objects transferred (uploaded, downloaded or copied), `skipped` the ones that were left alone (`--no-clobber`, `--if-size-differ`, objects that `sync` found up to date, Glacier objects with `--ignore-glacier-warnings`), `failed` the errors, and `deleted` the objects removed by `rm` or `sync --delete`.
-* `bytes` are object sizes. The size of an object that `rm` is given by its exact name is not known without another request, so those count as 0 bytes; objects found with a wildcard, and objects deleted by `sync --delete`, have their size.
+* `bytes` are object sizes. The size of an object that `rm` is given by its exact name is not known without another request, so those count as 0 bytes (`cp` and `mv` of one S3 object by name do make that request when a summary is asked for); objects found with a wildcard, and objects deleted by `sync --delete`, have their size.
 * `throughput_bytes_per_second` is the copied bytes over the whole duration of the command.
 * `errors` has the first 100 error messages. `failed.count` is the number of all errors. If the command fails before it does any work (for example the bucket does not exist) the error is in the file too.
-* The file is written to a temporary file and renamed. If it cannot be written, the command fails with an error.
+* `canceled` is `true` when the command was interrupted (for example with Ctrl-C). `success` is `false` then, and the interruption is not counted as a failure.
+* The file is written to a temporary file and renamed. `s5cmd` checks before it starts that the file can be created, and fails right away if it cannot (missing directory, path is a directory). If it cannot be written at the end, the command fails with an error.
 * Only the command that has the flag writes a file: `sync` does not pass it to the `cp` and `rm` commands it runs, and the commands of a `run` file that carry the flag are counted in the first one that starts.
 
 ### Dry run
@@ -721,6 +725,14 @@ current CPUs, `SHA256` and `SHA1` cost more, see the numbers in the changelog.
 `--checksum-algorithm` is refused for downloads and for copies between buckets,
 where there is no upload from this host to protect.
 
+The checksum is sent as a request header, computed before the request is
+signed. That is why it works together with `--unsigned-payload` and
+`--no-content-md5`, for single request and multipart uploads. With those two
+options and `--checksum-algorithm` the body is still checked by S3 end to end,
+which is not the case with the two options alone. The AWS SDK for Go v1 cannot
+send trailing checksums (`aws-chunked` with a trailer), so the file is always
+read once before it is sent.
+
 #### Verifying downloads (`--verify`)
 
 `cp`, `mv` and `sync` accept `--verify` for downloads. After an object is
@@ -741,8 +753,11 @@ file there is kept). With `mv` the source object is not deleted. If the object
 has nothing that can be compared, for example it is encrypted with KMS and has
 no additional checksum, or it is a multipart object without checksums on a
 server that does not report part sizes, `s5cmd` prints a `warning: cannot verify`
-line to stderr and does not fail: not being able to verify is not the same as a
-bad download. Use `--checksum-algorithm` when uploading to make sure objects can
+line to stderr, exits with `0` and leaves the file in place: not being able to
+verify is not the same as a bad download. The same goes for a multipart object on
+a server that does not report the part layout when the checksum does not match
+the parts of `--part-size`: use the part size of the upload, or the warning is
+all you get. Use `--checksum-algorithm` when uploading to make sure objects can
 be verified later.
 
 `--verify` reads every downloaded file once more, and asks S3 for the object
