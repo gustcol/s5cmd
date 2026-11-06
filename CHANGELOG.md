@@ -1,5 +1,5 @@
 # Changelog
-## v2.4.0 - 2026-11-05
+## v2.4.0 - 2026-11-06
 
 This is the first release of the maintained fork at github.com/gustcol/s5cmd. Building from source needs Go 1.26 or newer.
 
