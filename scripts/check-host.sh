@@ -508,9 +508,9 @@ check_memory() {
 	AVAIL_MIB=$avail_mib
 	desc="available ${avail_mib} MiB, estimated need $est_mib MiB ($base_mib base + $STREAMS stdin upload(s) x $PART_MIB MiB x $((CONCURRENCY + 1)) buffers)${note:-}"
 	if [ "$avail_mib" -lt "$est_mib" ]; then
-		emit FAIL memory "$desc" "lower --part-size or --concurrency, or run fewer stdin uploads at once"
+		emit FAIL memory "$desc" "lower --concurrency (keep --part-size at 50 or more), or run fewer stdin uploads at once"
 	elif [ "$avail_mib" -lt $((est_mib * 2)) ]; then
-		emit WARN memory "$desc" "lower --part-size or --concurrency, or free memory"
+		emit WARN memory "$desc" "lower --concurrency (keep --part-size at 50 or more), or free memory"
 	else
 		emit PASS memory "$desc"
 	fi
