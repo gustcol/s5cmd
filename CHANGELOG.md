@@ -1,5 +1,5 @@
 # Changelog
-## v2.5.0 - unreleased
+## v2.5.0 - 2026-11-06
 
 #### Behavior changes
 - `--transport auto` now uses HTTP/1.1. v2.4.0 negotiated HTTP/2 with any server that offered it, which includes Google Cloud Storage, Cloudflare R2 and nginx or Caddy in front of MinIO or Ceph RGW, and sent every request over a single connection. AWS S3 only speaks HTTP/1.1, so nothing changes there. HTTP/1.1 was faster and used less CPU in our tests (4 GiB download over TLS through Caddy: 1.6 s instead of 7.8 s). `--transport http2` is close to the old behavior but not the same: v2.4.0 used h2 when the server offered it and fell back to HTTP/1.1 otherwise, while `--transport http2` fails when the server does not negotiate h2, and it spreads requests over 8 connections (`--transport-conns`) instead of one.
