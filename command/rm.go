@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"regexp"
+	"sync"
 
 	"github.com/hashicorp/go-multierror"
 	"github.com/urfave/cli/v2"
@@ -82,6 +83,10 @@ func NewDeleteCommand() *cli.Command {
 				Name:  "version-id",
 				Usage: "use the specified version of an object",
 			},
+			&cli.StringFlag{
+				Name:  "summary-json",
+				Usage: "write a JSON summary of the job (counts and bytes deleted and failed, duration, first errors) to the given file when the command ends",
+			},
 		},
 		CustomHelpTemplate: deleteHelpTemplate,
 		Before: func(c *cli.Context) error {
@@ -93,6 +98,7 @@ func NewDeleteCommand() *cli.Command {
 		},
 		Action: func(c *cli.Context) (err error) {
 			defer stat.Collect(c.Command.FullName(), &err)()
+			defer startSummary(c, &err)()
 			fullCommand := commandFromContext(c)
 
 			sources := c.Args().Slice()
@@ -172,6 +178,11 @@ func (d Delete) Run(ctx context.Context) error {
 		merrorResult  error
 	)
 
+	// sizes of the objects that were sent to be deleted and are not reported
+	// yet, for the summary. At most a few chunks of objects are in flight.
+	var pendingSizes sync.Map
+	trackSizes := activeSummary.Load() != nil
+
 	// do object->url transformation
 	urlch := make(chan *url.URL)
 	go func() {
@@ -185,6 +196,7 @@ func (d Delete) Run(ctx context.Context) error {
 			if err := object.Err; err != nil {
 				merrorObjects = multierror.Append(merrorObjects, err)
 				printError(d.fullCommand, d.op, err)
+				summaryFailed(0, err)
 				continue
 			}
 
@@ -196,6 +208,14 @@ func (d Delete) Run(ctx context.Context) error {
 				continue
 			}
 
+			if trackSizes {
+				size := object.Size
+				if size == 0 {
+					size = summaryTakeSizeHint(deleteKey(object.URL))
+				}
+				println("STORE", deleteKey(object.URL), size)
+				pendingSizes.Store(deleteKey(object.URL), size)
+			}
 			urlch <- object.URL
 		}
 	}()
@@ -203,6 +223,13 @@ func (d Delete) Run(ctx context.Context) error {
 	resultch := client.MultiDelete(ctx, urlch)
 
 	for obj := range resultch {
+		var size int64
+		if trackSizes && obj.URL != nil {
+			if v, ok := pendingSizes.LoadAndDelete(deleteKey(obj.URL)); ok {
+				size = v.(int64)
+			}
+		}
+
 		if err := obj.Err; err != nil {
 			if errorpkg.IsCancelation(obj.Err) {
 				continue
@@ -210,8 +237,12 @@ func (d Delete) Run(ctx context.Context) error {
 
 			merrorResult = multierror.Append(merrorResult, obj.Err)
 			printError(d.fullCommand, d.op, obj.Err)
+			summaryFailed(size, obj.Err)
 			continue
 		}
+
+		println("RESULT", deleteKey(obj.URL), size)
+		summaryDeleted(size)
 
 		msg := log.InfoMessage{
 			Operation: d.op,
@@ -221,6 +252,11 @@ func (d Delete) Run(ctx context.Context) error {
 	}
 
 	return multierror.Append(merrorResult, merrorObjects).ErrorOrNil()
+}
+
+// deleteKey identifies an object in the results of MultiDelete.
+func deleteKey(u *url.URL) string {
+	return u.Bucket + "/" + u.Path + "?" + u.VersionID
 }
 
 // newSources creates object URL list from given sources.

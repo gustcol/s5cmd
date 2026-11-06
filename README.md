@@ -543,6 +543,35 @@ The cost is that every local file that has the same size as its object is read i
 
 If an object cannot be compared (it is encrypted with KMS or a customer key and has no additional checksum, or it is a multipart object whose part layout cannot be reproduced, for example on a server that does not report part sizes), `s5cmd` falls back to the default size and modification time rule for that object and writes a `cannot compare the content` line to the debug log. Upload with `--checksum-algorithm` to make objects comparable. `--checksum` cannot be used with `--size-only`.
 
+### Job summary
+
+`cp`, `mv`, `sync` and `rm` accept `--summary-json <file>`. When the command ends, `s5cmd` writes a JSON file with what the job did. It is written whether the command succeeded or not, as long as the command got past argument validation. The normal output, including `--json`, is not changed.
+
+    s5cmd sync --delete --summary-json summary.json dir/ s3://bucket/prefix/
+
+```json
+{
+  "command": "sync",
+  "started_at": "2026-11-06T10:00:00Z",
+  "finished_at": "2026-11-06T10:00:12.5Z",
+  "duration_seconds": 12.5,
+  "success": true,
+  "copied":  {"count": 120, "bytes": 1048576000},
+  "skipped": {"count": 880, "bytes": 5242880000},
+  "failed":  {"count": 0, "bytes": 0},
+  "deleted": {"count": 3, "bytes": 4096},
+  "throughput_bytes_per_second": 83886080,
+  "errors": []
+}
+```
+
+* `copied` counts the objects transferred (uploaded, downloaded or copied), `skipped` the ones that were left alone (`--no-clobber`, `--if-size-differ`, objects that `sync` found up to date, Glacier objects with `--ignore-glacier-warnings`), `failed` the errors, and `deleted` the objects removed by `rm` or `sync --delete`.
+* `bytes` are object sizes. The size of an object that `rm` is given by its exact name is not known without another request, so those count as 0 bytes; objects found with a wildcard, and objects deleted by `sync --delete`, have their size.
+* `throughput_bytes_per_second` is the copied bytes over the whole duration of the command.
+* `errors` has the first 100 error messages. `failed.count` is the number of all errors. If the command fails before it does any work (for example the bucket does not exist) the error is in the file too.
+* The file is written to a temporary file and renamed. If it cannot be written, the command fails with an error.
+* Only the command that has the flag writes a file: `sync` does not pass it to the `cp` and `rm` commands it runs, and the commands of a `run` file that carry the flag are counted in the first one that starts.
+
 ### Dry run
 `--dry-run` flag will output what operations will be performed without actually
 carrying out those operations.

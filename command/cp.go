@@ -161,6 +161,10 @@ func NewSharedFlags() []cli.Flag {
 			Name:  "checksum-algorithm",
 			Usage: "upload with an additional checksum that S3 verifies and stores with the object: CRC32C, CRC32, SHA256 or SHA1; reads each file one more time to compute it",
 		},
+		&cli.StringFlag{
+			Name:  "summary-json",
+			Usage: "write a JSON summary of the job (counts and bytes copied, skipped, failed and deleted, duration, throughput, first errors) to the given file when the command ends",
+		},
 		&cli.BoolFlag{
 			Name:  "verify",
 			Usage: "after a download, check the local file against the checksum or ETag of the object and fail if they differ; reads each file one more time",
@@ -291,6 +295,7 @@ func NewCopyCommand() *cli.Command {
 		},
 		Action: func(c *cli.Context) (err error) {
 			defer stat.Collect(c.Command.FullName(), &err)()
+			defer startSummary(c, &err)()
 
 			// don't delete source
 			copy, err := NewCopy(c, false)
@@ -514,12 +519,14 @@ func (c Copy) Run(ctx context.Context) error {
 			err := fmt.Errorf("object '%v' is not a regular file", object)
 			merrorObjects = multierror.Append(merrorObjects, err)
 			printError(c.fullCommand(), c.op, err)
+			summaryFailed(object.Size, err)
 			continue
 		}
 
 		if err := object.Err; err != nil {
 			merrorObjects = multierror.Append(merrorObjects, err)
 			printError(c.fullCommand(), c.op, err)
+			summaryFailed(0, err)
 			continue
 		}
 
@@ -528,6 +535,9 @@ func (c Copy) Run(ctx context.Context) error {
 				err := fmt.Errorf("object '%v' is on Glacier storage", object)
 				merrorObjects = multierror.Append(merrorObjects, err)
 				printError(c.fullCommand(), c.op, err)
+				summaryFailed(object.Size, err)
+			} else {
+				summarySkipped(object.Size)
 			}
 			continue
 		}
@@ -562,12 +572,13 @@ func (c Copy) Run(ctx context.Context) error {
 					c.metadataDirective = metadataDirectiveReplace
 				}
 			}
-			task = c.prepareCopyTask(ctx, srcurl, c.dst, isBatch, c.metadata)
+			task = c.prepareCopyTask(ctx, srcurl, c.dst, isBatch, c.metadata, object.Size)
 		case srcurl.IsRemote(): // remote->local
 			if c.metadataDirective != "" {
 				err := fmt.Errorf("metadata directive is not supported for download")
 				merrorObjects = multierror.Append(merrorObjects, err)
 				printError(c.fullCommand(), c.op, err)
+				summaryFailed(object.Size, err)
 				continue
 			}
 			task = c.prepareDownloadTask(ctx, srcurl, c.dst, isBatch)
@@ -576,6 +587,7 @@ func (c Copy) Run(ctx context.Context) error {
 				err := fmt.Errorf("metadata directive is not supported for upload")
 				merrorObjects = multierror.Append(merrorObjects, err)
 				printError(c.fullCommand(), c.op, err)
+				summaryFailed(object.Size, err)
 				continue
 			}
 			task = c.prepareUploadTask(ctx, srcurl, c.dst, isBatch, c.metadata)
@@ -583,8 +595,10 @@ func (c Copy) Run(ctx context.Context) error {
 			err := fmt.Errorf("unexpected src-dst pair: %v -> %v", srcurl, c.dst)
 			merrorObjects = multierror.Append(merrorObjects, err)
 			printError(c.fullCommand(), c.op, err)
+			summaryFailed(object.Size, err)
 			continue
 		}
+		task = summaryTask(task, object.Size)
 		if !parallel.RunContext(ctx, task, waiter) {
 			break
 		}
@@ -622,10 +636,11 @@ func (c Copy) prepareCopyTask(
 	dsturl *url.URL,
 	isBatch bool,
 	metadata map[string]string,
+	size int64,
 ) func() error {
 	return func() error {
 		dsturl = prepareRemoteDestination(srcurl, dsturl, c.flatten, isBatch)
-		err := c.doCopy(ctx, srcurl, dsturl, metadata)
+		err := c.doCopy(ctx, srcurl, dsturl, metadata, size)
 		if err != nil {
 			return &errorpkg.Error{
 				Op:  c.op,
@@ -754,6 +769,8 @@ func (c Copy) doDownload(ctx context.Context, srcurl *url.URL, dsturl *url.URL) 
 		return err
 	}
 
+	summaryCopied(size)
+
 	if !c.showProgress {
 		msg := log.InfoMessage{
 			Operation:   c.op,
@@ -856,6 +873,8 @@ func (c Copy) doUpload(ctx context.Context, srcurl *url.URL, dsturl *url.URL, ex
 		}
 	}
 
+	summaryCopied(obj.Size)
+
 	if !c.showProgress {
 		msg := log.InfoMessage{
 			Operation:   c.op,
@@ -872,7 +891,7 @@ func (c Copy) doUpload(ctx context.Context, srcurl *url.URL, dsturl *url.URL, ex
 	return nil
 }
 
-func (c Copy) doCopy(ctx context.Context, srcurl, dsturl *url.URL, extradata map[string]string) error {
+func (c Copy) doCopy(ctx context.Context, srcurl, dsturl *url.URL, extradata map[string]string, size int64) error {
 	dstClient, err := storage.NewClient(ctx, dsturl, c.dstStorageOpts())
 	if err != nil {
 		return err
@@ -915,6 +934,8 @@ func (c Copy) doCopy(ctx context.Context, srcurl, dsturl *url.URL, extradata map
 			return err
 		}
 	}
+
+	summaryCopied(size)
 
 	msg := log.InfoMessage{
 		Operation:   c.op,
@@ -1002,6 +1023,9 @@ func (c Copy) shouldOverride(ctx context.Context, srcurl *url.URL, dsturl *url.U
 		}
 	}
 
+	if errorpkg.IsWarning(stickyErr) {
+		summarySkipped(srcObj.Size)
+	}
 	return stickyErr
 }
 

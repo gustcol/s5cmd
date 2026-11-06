@@ -115,6 +115,7 @@ func NewSyncCommand() *cli.Command {
 		},
 		Action: func(c *cli.Context) (err error) {
 			defer stat.Collect(c.Command.FullName(), &err)()
+			defer startSummary(c, &err)()
 
 			return NewSync(c).Run(c)
 		},
@@ -136,6 +137,7 @@ func (e *syncErrors) add(err error) {
 	if err == nil || errorpkg.IsCancelation(err) {
 		return
 	}
+	summaryFailed(0, err)
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	e.errs = multierror.Append(e.errs, err)
@@ -297,6 +299,9 @@ func (s Sync) Run(c *cli.Context) error {
 		isBatch = obj != nil && obj.Type.IsDir()
 	}
 
+	if s.delete {
+		summaryExpectDeletes()
+	}
 	onlySource, onlyDest, commonObjects := compareObjects(sourceObjects, destObjects, isBatch)
 
 	sourceObjects = nil
@@ -361,6 +366,7 @@ func compareObjects(sourceObjects, destObjects chan *storage.Object, isSrcBatch 
 					src, srcOk = <-sourceObjects
 					dst, dstOk = <-destObjects
 				} else {
+					summarySizeHint(deleteKey(dst.URL), dst.Size)
 					dstOnly <- dst.URL
 					dst, dstOk = <-destObjects
 				}
@@ -368,6 +374,7 @@ func compareObjects(sourceObjects, destObjects chan *storage.Object, isSrcBatch 
 				srcOnly <- src.URL
 				src, srcOk = <-sourceObjects
 			} else if dstOk {
+				summarySizeHint(deleteKey(dst.URL), dst.Size)
 				dstOnly <- dst.URL
 				dst, dstOk = <-destObjects
 			} else /* if !srcOK && !dstOk */ {
@@ -544,13 +551,18 @@ func (s Sync) planRun(
 	// Always use raw mode since sync command generates commands
 	// from raw S3 objects. Otherwise, generated copy command will
 	// try to expand given source.
+	//
+	// --summary-json belongs to the sync command: the generated commands
+	// report to the summary of sync, they must not write files of their own.
 	defaultFlags := map[string]interface{}{
-		"raw": true,
+		"raw":          true,
+		"summary-json": nil,
 	}
 
 	commonDifferentSizeFlags := map[string]interface{}{
-		"raw":      true,
-		"checksum": nil,
+		"raw":          true,
+		"summary-json": nil,
+		"checksum":     nil,
 	}
 
 	// it should wait until both of the child goroutines for onlySource and common channels
@@ -571,6 +583,7 @@ func (s Sync) planRun(
 				// refuse this object, keep syncing the others, and make
 				// sure the command exits non-zero.
 				printError(s.fullCommand, s.op, err)
+				summaryFailed(0, err)
 				atomic.AddInt64(rejected, 1)
 				if s.exitOnError {
 					stopped = true
@@ -597,6 +610,7 @@ func (s Sync) planRun(
 			err := strategy.ShouldSync(sourceObject, destObject) // check if object should be copied.
 			if err != nil {
 				printDebug(s.op, err, curSourceURL, curDestURL)
+				summarySkipped(sourceObject.Size)
 				continue
 			}
 
@@ -660,9 +674,10 @@ func (s Sync) planRun(
 			// the destination prefix. Omit them from the generated rm command,
 			// which would match them against the full object key instead.
 			rmFlags := map[string]interface{}{
-				"raw":     true,
-				"exclude": nil,
-				"include": nil,
+				"raw":          true,
+				"exclude":      nil,
+				"include":      nil,
+				"summary-json": nil,
 			}
 
 			command, err := generateCommand(c, "rm", rmFlags, dstURLs...)
