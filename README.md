@@ -1031,7 +1031,7 @@ Setup unless noted: plain HTTP, RustFS on 8 CPU cores and `s5cmd` on 8 other cor
 scripts/check-host.sh [--numworkers N] [--concurrency N] [--part-size MiB] [--bandwidth Gbit] [--rtt ms] [--streams N]
 ```
 
-It only reads `ulimit`, `/proc` and `sysctl`, never changes anything, and explains each threshold in a comment with its source. It checks open files, ephemeral ports, `tcp_tw_reuse`, socket buffers (with `--bandwidth` and `--rtt`), congestion control, free memory and CPU count. On macOS it checks what applies and skips the rest. It exits with 1 if anything is `FAIL`. A real run in a container started with `--ulimit nofile=512:512` (some lines trimmed):
+It only reads `ulimit`, `/proc` and `sysctl`, never changes anything, and explains each threshold in a comment with its source. It checks open files, ephemeral ports, `tcp_tw_reuse`, socket buffers (with `--bandwidth` and `--rtt`), congestion control, free memory and CPU count. On macOS it checks what applies and skips the rest. It ends with a suggested command: `--concurrency` lowered if stdin uploads do not fit in memory, `--numworkers` lowered to fit the open file limit. It never lowers `--part-size` (8 MiB parts stalled in our tests). It exits with 1 if anything is `FAIL`. A real run in a container started with `--ulimit nofile=512:512` (some lines trimmed):
 
 ```
 $ scripts/check-host.sh --bandwidth 10 --rtt 80
