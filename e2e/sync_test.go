@@ -3092,3 +3092,84 @@ func TestSyncS3ObjectsIntoAnotherBucketWithIncludeFilters(t *testing.T) {
 		assertError(t, err, errS3NoSuchKey)
 	}
 }
+
+// sync --delete --exclude must not delete excluded files, whatever way the
+// local destination directory is spelled.
+func TestSyncS3BucketToLocalWithDeleteAndExcludeFilterDestinationSpellings(t *testing.T) {
+	t.Parallel()
+
+	for name, dstArg := range map[string]string{
+		"dot-slash-trailing": "./dst/",
+		"dot-slash":          "./dst",
+		"inner-dot":          "dst/./",
+		"plain":              "dst",
+	} {
+		dstArg := dstArg
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			s3client, s5cmd := setup(t)
+
+			bucket := s3BucketFromTestName(t)
+			createBucket(t, s3client, bucket)
+			putFile(t, s3client, bucket, "readme.md", "S: this is a readme file")
+
+			parent := fs.NewDir(t, "parent",
+				fs.WithDir("dst",
+					fs.WithFile("old.log", "D: this is a log file"),
+					fs.WithDir("sub",
+						fs.WithFile("keep.txt", "D: this is a text file"),
+					),
+				),
+			)
+			defer parent.Remove()
+
+			cmd := s5cmd("sync", "--delete", "--exclude", "sub/*", fmt.Sprintf("s3://%v/*", bucket), dstArg)
+			cmd.Dir = parent.Path()
+			result := icmd.RunCmd(cmd)
+			result.Assert(t, icmd.Success)
+
+			expected := fs.Expected(t,
+				fs.WithDir("dst",
+					fs.WithFile("readme.md", "S: this is a readme file"),
+					fs.WithDir("sub",
+						fs.WithFile("keep.txt", "D: this is a text file"),
+					),
+				),
+			)
+			assert.Assert(t, fs.Equal(parent.Path(), expected))
+		})
+	}
+}
+
+func TestSyncS3BucketToLocalWithDeleteAndIncludeFilterDestinationSpelling(t *testing.T) {
+	t.Parallel()
+
+	s3client, s5cmd := setup(t)
+
+	bucket := s3BucketFromTestName(t)
+	createBucket(t, s3client, bucket)
+	putFile(t, s3client, bucket, "a.txt", "A")
+
+	parent := fs.NewDir(t, "parent",
+		fs.WithDir("dst",
+			fs.WithFile("old.txt", "old"),
+			fs.WithFile("old.log", "log"),
+		),
+	)
+	defer parent.Remove()
+
+	cmd := s5cmd("sync", "--delete", "--include", "*.txt", fmt.Sprintf("s3://%v/*", bucket), "./dst/")
+	cmd.Dir = parent.Path()
+	result := icmd.RunCmd(cmd)
+	result.Assert(t, icmd.Success)
+
+	expected := fs.Expected(t,
+		fs.WithDir("dst",
+			fs.WithFile("a.txt", "A"),
+			// not matched by --include, so not part of the sync.
+			fs.WithFile("old.log", "log"),
+		),
+	)
+	assert.Assert(t, fs.Equal(parent.Path(), expected))
+}

@@ -586,10 +586,15 @@ func (s Sync) planRun(
 				// objects filtered out by --exclude/--include are not part
 				// of the sync, so they must not be deleted from the
 				// destination either.
-				if len(s.excludePatterns) > 0 && isURLMatched(s.excludePatterns, d.Path, dsturl.Prefix) {
+				//
+				// Match on the path relative to the destination, the same
+				// one compareObjects uses. Matching the cleaned absolute path
+				// against the raw prefix breaks for spellings like ./dst/.
+				rel := filepath.ToSlash(d.Relative())
+				if len(s.excludePatterns) > 0 && isURLMatched(s.excludePatterns, rel, "") {
 					continue
 				}
-				if len(s.includePatterns) > 0 && !isURLMatched(s.includePatterns, d.Path, dsturl.Prefix) {
+				if len(s.includePatterns) > 0 && !isURLMatched(s.includePatterns, rel, "") {
 					continue
 				}
 				dstURLs = append(dstURLs, d)
