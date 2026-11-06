@@ -180,19 +180,19 @@ func TestIsSourceNewer(t *testing.T) {
 			name:     "source modification time unavailable",
 			src:      nil,
 			dst:      &now,
-			expected: true,
+			expected: false,
 		},
 		{
 			name:     "destination modification time unavailable",
 			src:      &now,
 			dst:      nil,
-			expected: true,
+			expected: false,
 		},
 		{
 			name:     "both modification times unavailable",
 			src:      nil,
 			dst:      nil,
-			expected: true,
+			expected: false,
 		},
 	}
 

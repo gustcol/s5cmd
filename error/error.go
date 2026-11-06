@@ -80,6 +80,11 @@ var (
 	// ErrObjectIsNewerAndSizesMatch indicates the specified object is newer or same age and sizes of objects match.
 	ErrObjectIsNewerAndSizesMatch = fmt.Errorf("%v and %v", ErrObjectIsNewer, ErrObjectSizesMatch)
 
+	// ErrObjectModTimeUnknown indicates that the modification time of the
+	// source or the destination object is not available, so they cannot be
+	// compared.
+	ErrObjectModTimeUnknown = fmt.Errorf("object modification time unknown")
+
 	// ErrObjectIsGlacier indicates the object is in Glacier storage class.
 	ErrorObjectIsGlacier = fmt.Errorf("object is in Glacier storage class")
 )
@@ -88,7 +93,7 @@ var (
 // ErrObjectIsNewer or ErrObjectSizesMatch.
 func IsWarning(err error) bool {
 	switch err {
-	case ErrObjectExists, ErrObjectIsNewer, ErrObjectSizesMatch, ErrObjectIsNewerAndSizesMatch, ErrorObjectIsGlacier:
+	case ErrObjectExists, ErrObjectIsNewer, ErrObjectSizesMatch, ErrObjectIsNewerAndSizesMatch, ErrObjectModTimeUnknown, ErrorObjectIsGlacier:
 		return true
 	}
 

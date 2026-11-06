@@ -916,7 +916,10 @@ func (c Copy) shouldOverride(ctx context.Context, srcurl *url.URL, dsturl *url.U
 	}
 
 	if c.ifSourceNewer {
-		if isSourceNewer(srcObj, dstObj) {
+		if srcObj.ModTime == nil || dstObj.ModTime == nil {
+			// can't tell which one is newer, so don't overwrite.
+			stickyErr = errorpkg.ErrObjectModTimeUnknown
+		} else if isSourceNewer(srcObj, dstObj) {
 			stickyErr = nil
 		} else {
 			stickyErr = errorpkg.ErrObjectIsNewer
@@ -927,12 +930,12 @@ func (c Copy) shouldOverride(ctx context.Context, srcurl *url.URL, dsturl *url.U
 }
 
 // isSourceNewer reports whether srcObj was modified after dstObj. If either
-// modification time is unavailable, the source is treated as newer so that
-// the copy proceeds.
+// modification time is unavailable it reports false, so --if-source-newer
+// never overwrites on a guess.
 func isSourceNewer(srcObj, dstObj *storage.Object) bool {
 	srcMod, dstMod := srcObj.ModTime, dstObj.ModTime
 	if srcMod == nil || dstMod == nil {
-		return true
+		return false
 	}
 	return srcMod.After(*dstMod)
 }
