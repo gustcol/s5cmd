@@ -9,15 +9,57 @@ commits since June 2025 and no release since v2.3.0 (December 2024), while bug r
 requests keep piling up. This fork keeps `s5cmd` compatible with upstream (same commands, same
 flags) and ships fixes for the bugs that hurt in production.
 
-Every change is tested with the unit and end-to-end suites and also against a real MinIO server
-over the network, comparing the behavior with upstream v2.3.0.
+Every change is tested with the unit and end-to-end suites and also against real S3-compatible
+servers (MinIO, RustFS) over the network, comparing the behavior with upstream v2.3.0.
 
 Note: s5cmd still uses aws-sdk-go v1, which is end of life. A move to aws-sdk-go-v2 is planned.
 
-### What's new in v2.4.0
+### What's new
 
-Breaking changes first, then the rest. See [CHANGELOG.md](./CHANGELOG.md) for every item with
-credits.
+See [CHANGELOG.md](./CHANGELOG.md) for every item, with numbers and credits.
+
+#### v2.6.0: data integrity
+
+All new options are off by default, so nothing changes unless you ask for it.
+
+- **End-to-end upload checksums:** `--checksum-algorithm CRC32C|CRC32|SHA256|SHA1` for `cp`,
+  `mv` and `sync`. The checksum of the data (of each part for multipart uploads) is sent with the
+  request, and S3 checks it and stores it with the object. It also works with `--unsigned-payload`
+  and `--no-content-md5`. On a 1 GiB upload, CRC32C cost about 7% more client CPU and SHA256
+  about 26%. See [End-to-end checksums on upload](#end-to-end-checksums-on-upload---checksum-algorithm).
+- **Verified downloads:** `--verify` compares each downloaded file with the checksum or MD5 ETag
+  of the object, multipart objects included. A mismatch exits 1, removes the temporary file,
+  keeps an existing destination, and `mv` keeps the source. `--verify-strict` also fails when an
+  object cannot be verified. See [Verifying downloads](#verifying-downloads---verify).
+- **Content-based sync:** `sync --checksum` compares objects of the same size by content instead
+  of modification time. It catches a file edited to the same size with an old mtime and skips a
+  file that was only touched.
+- **Job summary:** `--summary-json FILE` for `cp`, `mv`, `sync` and `rm` writes counts, bytes,
+  duration, throughput, cancel state and the first errors to a JSON file. See
+  [Job summary](#job-summary).
+- **Fix:** `mv` from S3 to a local file deleted the object before the download was renamed into
+  place, so a failed rename could lose the only copy. The object is now deleted after the rename.
+
+#### v2.5.0: TLS options, HTTP transport and upload CPU
+
+- **Behavior change:** `--transport auto` (the default) uses HTTP/1.1. v2.4.0 negotiated HTTP/2
+  with servers that offered it and sent every request over one connection, which was much slower
+  (4 GiB over TLS through Caddy: 1.6 s with HTTP/1.1 instead of 7.8 s). AWS S3 only speaks
+  HTTP/1.1, so nothing changes there. Use `--transport http2` to get HTTP/2 back.
+- **TLS:** `--ca-cert`, `--client-cert` and `--client-key` for private CAs and mutual TLS.
+- **HTTP transport:** `--transport auto|http1|http2` and `--transport-conns N` (8 by default)
+  to spread HTTP/2 over several connections. See
+  [TLS and HTTP protocol options](#tls-and-http-protocol-options).
+- **Upload CPU:** `--unsigned-payload` (https only) and `--no-content-md5` skip hashing the body.
+  With both, a 4 GiB upload over TLS used 1.8 s of client CPU instead of 13.5 s. They trade away
+  integrity checks, so read
+  [Upload options](#upload-options---unsigned-payload-and---no-content-md5) first.
+- **Fixes:** `AWS_CA_BUNDLE` no longer breaks HTTP/1.1 against servers that offer HTTP/2, and the
+  CA bundle is used by every HTTP/2 connection.
+
+#### v2.4.0: first release of the fork
+
+Breaking changes first, then the rest.
 
 | Issue | What was wrong | What changed |
 |---|---|---|
