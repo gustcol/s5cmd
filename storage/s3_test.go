@@ -1670,4 +1670,7 @@ func TestNewHTTPClientConnPool(t *testing.T) {
 	if !tr.TLSClientConfig.InsecureSkipVerify || tr.MaxIdleConnsPerHost != 8 {
 		t.Errorf("insecure client misconfigured: %+v", tr)
 	}
+	if tr.DialContext == nil || !tr.ForceAttemptHTTP2 {
+		t.Error("insecure client must keep the dial settings and HTTP/2 of the default transport")
+	}
 }

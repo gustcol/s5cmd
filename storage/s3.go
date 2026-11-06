@@ -1423,7 +1423,9 @@ func newHTTPClient(opts Options) *http.Client {
 	}
 
 	var transport *http.Transport
-	if base, ok := http.DefaultTransport.(*http.Transport); ok && !opts.NoVerifySSL {
+	if base, ok := http.DefaultTransport.(*http.Transport); ok {
+		// keep the dial timeout, keep-alive and HTTP/2 settings of the
+		// default transport, also with --no-verify-ssl.
 		transport = base.Clone()
 	} else {
 		transport = &http.Transport{
@@ -1435,7 +1437,10 @@ func newHTTPClient(opts Options) *http.Client {
 	}
 
 	if opts.NoVerifySSL {
-		transport.TLSClientConfig = &tls.Config{InsecureSkipVerify: true}
+		if transport.TLSClientConfig == nil {
+			transport.TLSClientConfig = &tls.Config{}
+		}
+		transport.TLSClientConfig.InsecureSkipVerify = true
 	}
 
 	if opts.ConnPoolSize > 0 {
