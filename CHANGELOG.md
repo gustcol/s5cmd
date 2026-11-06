@@ -1,5 +1,5 @@
 # Changelog
-## v2.6.0 - unreleased
+## v2.6.0 - 2026-11-06
 
 #### Features
 - New `--checksum-algorithm CRC32C|CRC32|SHA256|SHA1` option for `cp`, `mv` and `sync` uploads. `s5cmd` computes a checksum of the data (of each part for multipart uploads) and sends it as a request header. S3 verifies it and stores it with the object. It works together with `--unsigned-payload` and `--no-content-md5`, and with them it is the end-to-end check of the body. Off by default. `CRC64NVME` is refused with an error: the AWS SDK for Go v1 cannot send it, and it cannot send trailing checksums either, so each file is read once more before the upload. Cost on a loopback server over plain http (1 GiB, median of 3 runs, client CPU is user plus system): 1 GiB file in 16 parts of 64 MiB, no checksum 2.07 s and 3.95 s of CPU, `CRC32C` 2.16 s and 4.24 s, `CRC32` 2.18 s and 4.31 s, `SHA1` 2.52 s and 4.89 s, `SHA256` 2.57 s and 4.96 s; 64 files of 16 MiB, no checksum 0.81 s and 4.05 s, `CRC32C` 0.80 s and 4.32 s, `CRC32` 0.81 s and 4.38 s, `SHA1` 0.92 s and 5.04 s, `SHA256` 0.91 s and 5.10 s. The baseline already includes the SHA-256 of the payload that the signature needs on plain http.
