@@ -93,17 +93,21 @@ func loadCAPool(path string) (*x509.CertPool, error) {
 	return pool, nil
 }
 
-// setProtocols restricts the HTTP protocols of t. Mode auto leaves the
-// transport untouched, so ALPN picks h2 or HTTP/1.1 as before.
+// setProtocols restricts the HTTP protocols of t. Mode auto uses HTTP/1.1.
+//
+// Go sends every request to a host over a single HTTP/2 connection, so when a
+// TLS front end such as Caddy or nginx offers h2 the whole transfer shares one
+// TCP stream and one encryption pipeline. A 4 GiB download took 7.8 s that way
+// against 1.7 s over HTTP/1.1 with the idle pool of this package, and
+// spreading h2 over 8 connections only got back to 1.9 s with about twice the
+// CPU. AWS S3 itself only speaks HTTP/1.1.
 func setProtocols(t *http.Transport, mode string) {
 	var p http.Protocols
 	switch mode {
-	case TransportHTTP1:
-		p.SetHTTP1(true)
 	case TransportHTTP2:
 		p.SetHTTP2(true)
 	default:
-		return
+		p.SetHTTP1(true)
 	}
 	t.Protocols = &p
 }

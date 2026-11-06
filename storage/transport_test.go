@@ -231,9 +231,9 @@ func TestNegotiatedProtocol(t *testing.T) {
 		h2   bool
 		want string // empty means the request must fail
 	}{
-		{"auto on h2 server", TransportAuto, true, "HTTP/2.0"},
+		{"auto on h2 server", TransportAuto, true, "HTTP/1.1"},
 		{"auto on h1 server", TransportAuto, false, "HTTP/1.1"},
-		{"default on h2 server", "", true, "HTTP/2.0"},
+		{"default on h2 server", "", true, "HTTP/1.1"},
 		{"http1 on h2 server", TransportHTTP1, true, "HTTP/1.1"},
 		{"http1 on h1 server", TransportHTTP1, false, "HTTP/1.1"},
 		{"http2 on h2 server", TransportHTTP2, true, "HTTP/2.0"},

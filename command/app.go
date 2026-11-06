@@ -69,7 +69,7 @@ var app = &cli.App{
 				Default: storage.TransportAuto,
 			},
 			EnvVars: []string{"S5CMD_TRANSPORT"},
-			Usage:   "HTTP protocol: (auto, http1, http2, http3)",
+			Usage:   "HTTP protocol: (auto, http1, http2, http3), auto uses HTTP/1.1",
 		},
 		&cli.IntFlag{
 			Name:    "transport-conns",

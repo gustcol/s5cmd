@@ -170,7 +170,7 @@ func TestTransportFlag(t *testing.T) {
 	f := newTLSServer(t, false)
 
 	for _, tc := range []struct{ mode, proto string }{
-		{"auto", "HTTP/2.0"},
+		{"auto", "HTTP/1.1"},
 		{"http1", "HTTP/1.1"},
 		{"http2", "HTTP/2.0"},
 	} {
