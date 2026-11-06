@@ -532,9 +532,13 @@ func TestHTTP1WithAWSCABundleFromEnv(t *testing.T) {
 // need HTTP/1.1, so they must not go through the h2-only transports.
 func TestCredentialRequestsAvoidH2OnlyTransport(t *testing.T) {
 	pki := newTestPKI(t)
-	creds := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	// An HTTP/1.1 only https server: a plain http server would not do, because
+	// newer Go versions speak HTTP/1.1 over http:// even when only h2 is set.
+	creds := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Write([]byte(`{"AccessKeyId":"id","SecretAccessKey":"secret","Token":"tok","Expiration":"2099-01-01T00:00:00Z"}`))
 	}))
+	creds.TLS = &tls.Config{Certificates: []tls.Certificate{pki.serverCert}, NextProtos: []string{"http/1.1"}}
+	creds.StartTLS()
 	t.Cleanup(creds.Close)
 
 	t.Setenv("AWS_ACCESS_KEY_ID", "")
