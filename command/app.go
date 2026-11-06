@@ -69,12 +69,13 @@ var app = &cli.App{
 				Default: storage.TransportAuto,
 			},
 			EnvVars: []string{"S5CMD_TRANSPORT"},
-			Usage:   "HTTP protocol: (auto, http1, http2, http3), auto uses HTTP/1.1",
+			Usage:   "HTTP protocol: (auto, http1, http2, http3), auto uses HTTP/1.1, http3 needs a build with the http3 tag",
 		},
 		&cli.IntFlag{
-			Name:    "transport-conns",
-			EnvVars: []string{"S5CMD_TRANSPORT_CONNS"},
-			Usage:   "number of independent HTTP/2 connections that requests are spread over (default 8, only used with --transport http2)",
+			Name:        "transport-conns",
+			EnvVars:     []string{"S5CMD_TRANSPORT_CONNS"},
+			DefaultText: "8",
+			Usage:       "number of independent HTTP/2 connections that requests are spread over (only used with --transport http2)",
 		},
 		&cli.BoolFlag{
 			Name:  "unsigned-payload",
