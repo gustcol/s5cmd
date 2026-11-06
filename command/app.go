@@ -83,7 +83,7 @@ var app = &cli.App{
 		},
 		&cli.BoolFlag{
 			Name:  "no-content-md5",
-			Usage: "do not send a Content-MD5 header with uploads, so the server does not check the body against it",
+			Usage: "do not send a Content-MD5 header with uploads (the server then does not check the body; buckets with Object Lock reject such uploads)",
 		},
 		&cli.GenericFlag{
 			Name: "log",
