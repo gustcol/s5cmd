@@ -8,7 +8,7 @@
 - New TLS options `--ca-cert`, `--client-cert` and `--client-key` for private CAs and mutual TLS. The CA file replaces the system roots (like `AWS_CA_BUNDLE` and `curl --cacert`) and wins over `AWS_CA_BUNDLE`. `--client-cert` and `--client-key` must be given together. `--no-verify-ssl` works as before.
 - New `--transport auto|http1|http2` option (env `S5CMD_TRANSPORT`, default `auto`). `auto` uses HTTP/1.1, `http1` and `http2` restrict the protocol, and `http2` fails when the server does not negotiate h2. The negotiated protocol is logged at debug level (trace level for `auto`).
 - New `--transport-conns N` option (env `S5CMD_TRANSPORT_CONNS`, default 8) to spread `--transport http2` over several connections. Go uses one HTTP/2 connection per host, which limits bulk copies.
-- New `--unsigned-payload` option. Uploads over https send `UNSIGNED-PAYLOAD` instead of a SHA-256 of the body, so the body is protected by TLS only. Ignored for plain http endpoints.
+- New `--unsigned-payload` option. Uploads over https send `UNSIGNED-PAYLOAD` instead of a SHA-256 of the body, so the body is protected by TLS only. Ignored, with a one-time warning, for plain http endpoints.
 - New `--no-content-md5` option. Uploads do not send a `Content-MD5` header, so the server does not check the body against it. Other operations (for example `rm` of several objects) still send it. Buckets with Object Lock reject uploads without `Content-MD5`, so do not use it with them. Together with `--unsigned-payload` there is no end-to-end check of the body beyond TLS. With `--unsigned-payload` a 4 GiB upload over TLS used 1.8 s instead of 13.5 s of client CPU.
 
 #### Improvements
