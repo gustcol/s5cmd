@@ -765,7 +765,17 @@ verified is treated like a bad one: the command exits with `1`, the temporary
 file is removed, an existing destination is kept and `mv` does not delete the
 source. Use it when a file must not be accepted unchecked, for example on a
 server that does not report the part layout of multipart objects. Objects
-that were uploaded with `--checksum-algorithm` can always be verified.
+that were uploaded with `--checksum-algorithm` can always be verified on AWS S3,
+which reports the part layout. On a server that does not, a multipart object
+with a composite checksum can only be checked against parts of `--part-size`:
+if the upload used another part size the result is unknown, and
+`--verify-strict` fails a good download. Pass the part size of the upload.
+
+On servers that are not AWS S3, an ETag is not always an MD5. If a server
+encrypts or transforms objects and still returns a 32 character hex ETag,
+`s5cmd` cannot tell, so `--verify` fails a good download, and
+`sync --checksum` copies the object again on every run. Upload with
+`--checksum-algorithm`: the stored checksum is used before the ETag.
 
 `--verify` reads every downloaded file once more, and asks S3 for the object
 checksums with one extra `HEAD` request per object. For a multipart object
