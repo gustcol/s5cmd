@@ -297,7 +297,7 @@ type Copy struct {
 	src         *url.URL
 	dst         *url.URL
 	op          string
-	fullCommand string
+	fullCommand func() string
 
 	deleteSource bool
 
@@ -341,18 +341,21 @@ type Copy struct {
 
 // NewCopy creates Copy from cli.Context.
 func NewCopy(c *cli.Context, deleteSource bool) (*Copy, error) {
-	fullCommand := commandFromContext(c)
+	// the text is only needed when an error is printed, and building it
+	// parses every flag of the command, which is expensive for a batch of
+	// thousands of commands.
+	fullCommand := sync.OnceValue(func() string { return commandFromContext(c) })
 
 	src, err := url.New(c.Args().Get(0), url.WithVersion(c.String("version-id")),
 		url.WithRaw(c.Bool("raw")))
 	if err != nil {
-		printError(fullCommand, c.Command.Name, err)
+		printError(fullCommand(), c.Command.Name, err)
 		return nil, err
 	}
 
 	dst, err := url.New(c.Args().Get(1), url.WithRaw(c.Bool("raw")))
 	if err != nil {
-		printError(fullCommand, c.Command.Name, err)
+		printError(fullCommand(), c.Command.Name, err)
 		return nil, err
 	}
 
@@ -367,7 +370,7 @@ func NewCopy(c *cli.Context, deleteSource bool) (*Copy, error) {
 	metadata, ok := c.Value("metadata").(MapValue)
 	if !ok {
 		err := errors.New("metadata flag is not a map")
-		printError(fullCommand, c.Command.Name, err)
+		printError(fullCommand(), c.Command.Name, err)
 		return nil, err
 	}
 
@@ -429,13 +432,13 @@ func (c Copy) Run(ctx context.Context) error {
 
 	client, err := storage.NewClient(ctx, c.src, c.storageOpts)
 	if err != nil {
-		printError(c.fullCommand, c.op, err)
+		printError(c.fullCommand(), c.op, err)
 		return err
 	}
 
 	objch, err := expandSource(ctx, client, c.followSymlinks, c.src)
 	if err != nil {
-		printError(c.fullCommand, c.op, err)
+		printError(c.fullCommand(), c.op, err)
 		return err
 	}
 
@@ -458,7 +461,7 @@ func (c Copy) Run(ctx context.Context) error {
 	if !isBatch && !c.src.IsRemote() {
 		obj, err := client.Stat(ctx, c.src)
 		if err != nil {
-			printError(c.fullCommand, c.op, err)
+			printError(c.fullCommand(), c.op, err)
 			return err
 		}
 
@@ -467,13 +470,13 @@ func (c Copy) Run(ctx context.Context) error {
 
 	c.excludePatterns, err = createRegexFromWildcard(c.exclude)
 	if err != nil {
-		printError(c.fullCommand, c.op, err)
+		printError(c.fullCommand(), c.op, err)
 		return err
 	}
 
 	c.includePatterns, err = createRegexFromWildcard(c.include)
 	if err != nil {
-		printError(c.fullCommand, c.op, err)
+		printError(c.fullCommand(), c.op, err)
 		return err
 	}
 
@@ -485,13 +488,13 @@ func (c Copy) Run(ctx context.Context) error {
 		if !object.Type.IsRegular() {
 			err := fmt.Errorf("object '%v' is not a regular file", object)
 			merrorObjects = multierror.Append(merrorObjects, err)
-			printError(c.fullCommand, c.op, err)
+			printError(c.fullCommand(), c.op, err)
 			continue
 		}
 
 		if err := object.Err; err != nil {
 			merrorObjects = multierror.Append(merrorObjects, err)
-			printError(c.fullCommand, c.op, err)
+			printError(c.fullCommand(), c.op, err)
 			continue
 		}
 
@@ -499,14 +502,14 @@ func (c Copy) Run(ctx context.Context) error {
 			if !c.ignoreGlacierWarnings {
 				err := fmt.Errorf("object '%v' is on Glacier storage", object)
 				merrorObjects = multierror.Append(merrorObjects, err)
-				printError(c.fullCommand, c.op, err)
+				printError(c.fullCommand(), c.op, err)
 			}
 			continue
 		}
 
 		isExcluded, err := isObjectExcluded(object, c.excludePatterns, c.includePatterns, c.src.Prefix)
 		if err != nil {
-			printError(c.fullCommand, c.op, err)
+			printError(c.fullCommand(), c.op, err)
 		}
 		if isExcluded {
 			continue
@@ -539,7 +542,7 @@ func (c Copy) Run(ctx context.Context) error {
 			if c.metadataDirective != "" {
 				err := fmt.Errorf("metadata directive is not supported for download")
 				merrorObjects = multierror.Append(merrorObjects, err)
-				printError(c.fullCommand, c.op, err)
+				printError(c.fullCommand(), c.op, err)
 				continue
 			}
 			task = c.prepareDownloadTask(ctx, srcurl, c.dst, isBatch)
@@ -547,14 +550,14 @@ func (c Copy) Run(ctx context.Context) error {
 			if c.metadataDirective != "" {
 				err := fmt.Errorf("metadata directive is not supported for upload")
 				merrorObjects = multierror.Append(merrorObjects, err)
-				printError(c.fullCommand, c.op, err)
+				printError(c.fullCommand(), c.op, err)
 				continue
 			}
 			task = c.prepareUploadTask(ctx, srcurl, c.dst, isBatch, c.metadata)
 		default:
 			err := fmt.Errorf("unexpected src-dst pair: %v -> %v", srcurl, c.dst)
 			merrorObjects = multierror.Append(merrorObjects, err)
-			printError(c.fullCommand, c.op, err)
+			printError(c.fullCommand(), c.op, err)
 			continue
 		}
 		if !parallel.RunContext(ctx, task, waiter) {
@@ -571,7 +574,7 @@ func (c Copy) Run(ctx context.Context) error {
 // errCh is closed. When a task hits the open file limit it prints a hint once
 // and calls cancel, so queued work stops and Run can return normally instead of
 // killing the process and skipping deferred cleanup.
-func collectCopyErrors(fullCommand, op string, errCh <-chan error, cancel context.CancelFunc) error {
+func collectCopyErrors(fullCommand func() string, op string, errCh <-chan error, cancel context.CancelFunc) error {
 	var merr error
 	fdlimitWarned := false
 	for err := range errCh {
@@ -582,7 +585,7 @@ func collectCopyErrors(fullCommand, op string, errCh <-chan error, cancel contex
 			}
 			cancel()
 		}
-		printError(fullCommand, op, err)
+		printError(fullCommand(), op, err)
 		merr = multierror.Append(merr, err)
 	}
 	return merr

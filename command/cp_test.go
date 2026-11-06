@@ -224,7 +224,7 @@ func TestCollectCopyErrorsFileLimit(t *testing.T) {
 	errCh <- errors.New("some other error")
 	close(errCh)
 
-	err := collectCopyErrors("", "cp", errCh, cancel)
+	err := collectCopyErrors(func() string { return "" }, "cp", errCh, cancel)
 	if err == nil {
 		t.Fatal("expected an error, got nil")
 	}
